@@ -25,7 +25,6 @@ class MyApp extends StatelessWidget {
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
 
-  // லிங்க்களை ஓபன் செய்வதற்கான கோடு
   Future<void> _launchURL(String urlString) async {
     final Uri url = Uri.parse(urlString);
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
