@@ -1,0 +1,57 @@
+name: Build Jilaksan Class Manager APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Initialize Android Project Skeleton
+        run: |
+          if [ ! -d "android" ]; then
+            flutter create --platforms android --org com.jilaksan.classmanager .
+          fi
+
+      - name: Configure Biometric Permissions
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            sed -i '/<manifest/a \    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <uses-permission android:name="android.permission.USE_FINGERPRINT"/>' $MANIFEST
+          fi
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Generate App Icons
+        run: |
+          if [ -f "app_icon.png" ]; then
+            flutter pub run flutter_launcher_icons
+          fi
+
+      - name: Build Standalone Release APK
+        run: flutter build apk --release
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Class_Batch_Manager_Release
+          path: build/app/outputs/flutter-apk/app-release.apk
