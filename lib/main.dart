@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
   runApp(const MyApp());
@@ -23,6 +24,14 @@ class MyApp extends StatelessWidget {
 
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
+
+  // லிங்க்களை ஓபன் செய்வதற்கான கோடு
+  Future<void> _launchURL(String urlString) async {
+    final Uri url = Uri.parse(urlString);
+    if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
+      debugPrint('Could not launch $url');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -58,7 +67,7 @@ class ProfilePage extends StatelessWidget {
             // WhatsApp Button
             ElevatedButton.icon(
               onPressed: () {
-                // Link will be added in next step
+                _launchURL('https://wa.me/94751696798');
               },
               icon: const Icon(Icons.chat),
               label: const Text('Contact on WhatsApp'),
@@ -73,7 +82,7 @@ class ProfilePage extends StatelessWidget {
             // Instagram Button
             ElevatedButton.icon(
               onPressed: () {
-                // Link will be added in next step
+                _launchURL('https://www.instagram.com/jilaksan_k?igsi=bWJocGkxNWY5MG5y');
               },
               icon: const Icon(Icons.camera_alt),
               label: const Text('Follow on Instagram'),
@@ -88,7 +97,7 @@ class ProfilePage extends StatelessWidget {
             // Facebook Button
             ElevatedButton.icon(
               onPressed: () {
-                // Link will be added in next step
+                _launchURL('https://www.facebook.com/share/1EZxroSv9E/');
               },
               icon: const Icon(Icons.facebook),
               label: const Text('Connect on Facebook'),
