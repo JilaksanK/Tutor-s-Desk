@@ -11,35 +11,94 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Class Batch Manager',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueAccent),
         useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Class Batch Manager Home'),
+      home: const ProfilePage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-  final String title;
+class ProfilePage extends StatelessWidget {
+  const ProfilePage({super.key});
 
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text(widget.title),
+        title: const Text('Developer Profile'),
+        backgroundColor: Colors.blueAccent,
+        foregroundColor: Colors.white,
+        centerTitle: true,
       ),
-      body: const Center(
-        child: Text(
-          'Welcome to Class Batch Manager!',
-          style: TextStyle(fontSize: 20),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const CircleAvatar(
+              radius: 50,
+              backgroundColor: Colors.blueAccent,
+              child: Icon(Icons.person, size: 50, color: Colors.white),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Jilaksan K',
+              style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Advanced Level Student & Developer',
+              style: TextStyle(fontSize: 16, color: Colors.grey),
+            ),
+            const SizedBox(height: 30),
+            
+            // WhatsApp Button
+            ElevatedButton.icon(
+              onPressed: () {
+                // Link will be added in next step
+              },
+              icon: const Icon(Icons.chat),
+              label: const Text('Contact on WhatsApp'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(280, 50),
+              ),
+            ),
+            const SizedBox(height: 15),
+            
+            // Instagram Button
+            ElevatedButton.icon(
+              onPressed: () {
+                // Link will be added in next step
+              },
+              icon: const Icon(Icons.camera_alt),
+              label: const Text('Follow on Instagram'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.pinkAccent,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(280, 50),
+              ),
+            ),
+            const SizedBox(height: 15),
+            
+            // Facebook Button
+            ElevatedButton.icon(
+              onPressed: () {
+                // Link will be added in next step
+              },
+              icon: const Icon(Icons.facebook),
+              label: const Text('Connect on Facebook'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(280, 50),
+              ),
+            ),
+          ],
         ),
       ),
     );
