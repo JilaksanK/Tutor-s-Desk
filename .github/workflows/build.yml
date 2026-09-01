@@ -1,4 +1,4 @@
-name: Build Jilaksan Class Manager APK
+Name: Build Jilaksan Class Manager APK
 
 on:
   push:
@@ -31,11 +31,22 @@ jobs:
             flutter create --platforms android --org com.jilaksan.classmanager .
           fi
 
-      - name: Configure Biometric Permissions
+      - name: Configure App Name and Biometrics Setup
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST" ]; then
+            # 1. Change App Launcher Name to "Tutor's Desk"
+            sed -i "s/android:label=\"[^\"]*\"/android:label=\"Tutor's Desk\"/" $MANIFEST
+            
+            # 2. Add Face Lock, Fingerprint & General Biometric Permissions
             sed -i '/<manifest/a \    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <uses-permission android:name="android.permission.USE_FINGERPRINT"/>' $MANIFEST
+          fi
+          
+          # 3. Magic Script: Automatically Update Kotlin file for Local Auth (Face/Fingerprint Dialog support)
+          MAIN_ACTIVITY=$(find android/app/src/main/kotlin -name "MainActivity.kt")
+          if [ -f "$MAIN_ACTIVITY" ]; then
+            sed -i 's/import io.flutter.embedding.android.FlutterActivity/import io.flutter.embedding.android.FlutterFragmentActivity/' $MAIN_ACTIVITY
+            sed -i 's/class MainActivity: FlutterActivity()/class MainActivity: FlutterFragmentActivity()/' $MAIN_ACTIVITY
           fi
 
       - name: Install Dependencies
