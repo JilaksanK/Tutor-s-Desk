@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-// Animation-க்காக Global Variable
 bool _isFirstTimeDrawerOpened = true;
 
 void main() {
@@ -30,19 +29,15 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> {
       title: "Tutor's Desk",
       debugShowCheckedModeBanner: false,
       themeMode: _themeMode,
-      
-      // LIGHT THEME (Background Darker Gray for 3D look)
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.light,
-        scaffoldBackgroundColor: const Color(0xFFE8E8ED), // லேசான Dark Gray
+        scaffoldBackgroundColor: const Color(0xFFE8E8ED), 
         colorScheme: ColorScheme.fromSeed(
           brightness: Brightness.light,
           seedColor: const Color(0xFF005CFF),
         ),
       ),
-      
-      // DARK THEME
       darkTheme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
@@ -60,7 +55,6 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> {
   }
 }
 
-// --- DASHBOARD SCREEN ---
 class DashboardScreen extends StatelessWidget {
   final VoidCallback toggleTheme;
   final bool isDarkMode;
@@ -125,7 +119,6 @@ class DashboardScreen extends StatelessWidget {
   }
 }
 
-// --- BATCH CARD WIDGET (With 3D Look & Click Action) ---
 class BatchCard extends StatelessWidget {
   final String batchName;
   final String currentSet;
@@ -151,8 +144,8 @@ class BatchCard extends StatelessWidget {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Card(
-      elevation: isDark ? 2 : 12, // 3D Elevation
-      shadowColor: isDark ? Colors.black54 : Colors.black26, // Realistic Shadow
+      elevation: isDark ? 2 : 12, 
+      shadowColor: isDark ? Colors.black54 : Colors.black26, 
       color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(24),
@@ -161,7 +154,6 @@ class BatchCard extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(24),
         onTap: () {
-          // Next Step: Open Batch Details Dashboard
           Navigator.push(
             context,
             MaterialPageRoute(
@@ -252,7 +244,6 @@ class BatchCard extends StatelessWidget {
   }
 }
 
-// --- NEW: BATCH DETAILS DASHBOARD ---
 class BatchDetailsScreen extends StatelessWidget {
   final String batchName;
   final bool isFeeReminder;
@@ -332,7 +323,6 @@ class BatchDetailsScreen extends StatelessWidget {
   }
 }
 
-// --- CREATE NEW BATCH SCREEN ---
 class CreateBatchScreen extends StatelessWidget {
   const CreateBatchScreen({super.key});
 
@@ -348,13 +338,26 @@ class CreateBatchScreen extends StatelessWidget {
           children: [
             TextFormField(
               decoration: InputDecoration(
-                labelText: 'Batch Name',
+                labelText: 'Batch Name (e.g. 2027 A)',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                 filled: true,
                 fillColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
               ),
             ),
             const SizedBox(height: 20),
+            
+            // Description பாக்ஸ் மீண்டும் சேர்க்கப்பட்டுள்ளது
+            TextFormField(
+              maxLines: 3,
+              decoration: InputDecoration(
+                labelText: 'Batch Description (Optional)',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                filled: true,
+                fillColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+              ),
+            ),
+            const SizedBox(height: 20),
+
             TextFormField(
               initialValue: '8',
               keyboardType: TextInputType.number,
@@ -375,7 +378,12 @@ class CreateBatchScreen extends StatelessWidget {
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 ),
-                onPressed: () { Navigator.pop(context); },
+                onPressed: () { 
+                  Navigator.pop(context); 
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Batch Created Successfully!')),
+                  );
+                },
                 child: const Text('Create Batch', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               ),
             ),
@@ -386,7 +394,6 @@ class CreateBatchScreen extends StatelessWidget {
   }
 }
 
-// --- DEVELOPER PROFILE DRAWER (Gradient, Image Zoom, Name Animation) ---
 class DeveloperProfileDrawer extends StatefulWidget {
   const DeveloperProfileDrawer({super.key});
 
@@ -430,7 +437,6 @@ class _DeveloperProfileDrawerState extends State<DeveloperProfileDrawer> {
         children: [
           UserAccountsDrawerHeader(
             decoration: const BoxDecoration(
-              // Gradient Effect added here
               gradient: LinearGradient(
                 colors: [Color(0xFF005CFF), Color(0xFF00D2FF)],
                 begin: Alignment.topLeft,
@@ -438,7 +444,6 @@ class _DeveloperProfileDrawerState extends State<DeveloperProfileDrawer> {
               ),
             ),
             accountName: TweenAnimationBuilder(
-              // Animation 1st time மட்டும் நடக்கும்
               tween: Tween<double>(begin: _isFirstTimeDrawerOpened ? 0 : 1, end: 1),
               duration: const Duration(milliseconds: 1200),
               curve: Curves.easeOutBack,
@@ -488,6 +493,13 @@ class _DeveloperProfileDrawerState extends State<DeveloperProfileDrawer> {
             title: const Text('Instagram'),
             subtitle: const Text('jilaksan_k'),
             onTap: () => _launchURL('https://www.instagram.com/jilaksan_k?igsi=bWJocGkxNWY5MG5y'),
+          ),
+          // FB லிங்க் மீண்டும் சேர்க்கப்பட்டுள்ளது
+          ListTile(
+            leading: const Icon(Icons.facebook, color: Colors.blue),
+            title: const Text('Facebook'),
+            subtitle: const Text('Kanthasamy Jilaksan'),
+            onTap: () => _launchURL('https://www.facebook.com/share/1EZxroSv9E/'),
           ),
         ],
       ),
