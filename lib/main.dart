@@ -244,7 +244,7 @@ class BatchCard extends StatelessWidget {
   }
 }
 
-// --- LOGIC: BATCH DETAILS DASHBOARD (StatefulWidget) ---
+// --- LOGIC: BATCH DETAILS DASHBOARD ---
 class BatchDetailsScreen extends StatefulWidget {
   final String batchName;
 
@@ -255,18 +255,31 @@ class BatchDetailsScreen extends StatefulWidget {
 }
 
 class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
-  // Initial Logic Variables
   int currentSetNumber = 3;
   int completedClasses = 5;
   final int classLimit = 8;
+  bool isFeePaid = false; // Fee status tracking
   
-  // Dynamic Fee Reminder Logic (Activates at 3 remaining classes)
-  bool get isFeeReminder => (classLimit - completedClasses) <= 3 && completedClasses < classLimit;
+  List<Map<String, String>> classHistory = [
+    {'date': '29 Aug 2026', 'subject': 'Database Normalization', 'classNum': '5'},
+    {'date': '25 Aug 2026', 'subject': 'Networking', 'classNum': '4'},
+    {'date': '21 Aug 2026', 'subject': 'Binary Systems', 'classNum': '3'},
+    {'date': '17 Aug 2026', 'subject': 'Logic Gates', 'classNum': '2'},
+    {'date': '14 Aug 2026', 'subject': 'Intro to ICT', 'classNum': '1'},
+  ];
 
-  // Added Classes History
-  List<Map<String, String>> classHistory = [];
+  // Fee Reminder Logic (Activates at 3 remaining classes if not paid)
+  bool get isFeeReminder => (classLimit - completedClasses) <= 3 && completedClasses < classLimit && !isFeePaid;
+
+  String _getFormattedDate() {
+    List<String> months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    DateTime now = DateTime.now();
+    return '${now.day} ${months[now.month - 1]} ${now.year}';
+  }
 
   void _showAddClassDialog() {
+    if (completedClasses >= classLimit) return; // Prevent extra opening
+
     TextEditingController subjectController = TextEditingController();
     
     showDialog(
@@ -291,15 +304,12 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
             ],
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
                 if (subjectController.text.isNotEmpty) {
+                  Navigator.pop(context); // Close dialog first
                   _addClass(subjectController.text);
-                  Navigator.pop(context);
                 }
               },
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white),
@@ -313,41 +323,49 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
 
   void _addClass(String subject) {
     setState(() {
-      classHistory.add({
-        'date': '${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
-        'subject': subject,
-        'classNum': 'Class ${completedClasses + 1}'
-      });
       completedClasses++;
-
-      // Automatically complete set if limit reached
-      if (completedClasses >= classLimit) {
-        _showSetCompletedDialog();
-      }
+      // Add at index 0 so it appears at the top
+      classHistory.insert(0, {
+        'date': _getFormattedDate(),
+        'subject': subject,
+        'classNum': '$completedClasses'
+      });
     });
+
+    if (completedClasses >= classLimit) {
+      // Small delay before showing completion dialog
+      Future.delayed(const Duration(milliseconds: 400), () {
+        _showSetCompletedDialog();
+      });
+    }
   }
 
   void _showSetCompletedDialog() {
     showDialog(
       context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        icon: const Icon(Icons.verified, color: Colors.green, size: 50),
-        title: Text('Set $currentSetNumber Completed!'),
-        content: const Text('The final class has been added. Generating the next set automatically.'),
-        actions: [
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              setState(() {
-                currentSetNumber++;
-                completedClasses = 0; // Reset for next set
-                classHistory.clear(); // Clear local list for new set view
-              });
-            },
-            child: const Text('Continue to Next Set'),
-          ),
-        ],
+      barrierDismissible: false, // Prevents tapping outside
+      builder: (context) => PopScope(
+        canPop: false, // Prevents closing via Android Back Button!
+        child: AlertDialog(
+          icon: const Icon(Icons.verified, color: Colors.green, size: 50),
+          title: Text('Set $currentSetNumber Completed!'),
+          content: const Text('The final class has been added. Generating the next set automatically.'),
+          actions: [
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                setState(() {
+                  currentSetNumber++;
+                  completedClasses = 0; 
+                  classHistory.clear(); 
+                  isFeePaid = false; // Reset Fee for new set
+                });
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+              child: const Text('Continue to Next Set'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -356,6 +374,11 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
     int remainingClasses = classLimit - completedClasses;
+    
+    // Dynamic Progress Bar Color
+    Color progressColor = const Color(0xFF005CFF);
+    if (completedClasses >= classLimit) progressColor = Colors.green;
+    else if (isFeeReminder) progressColor = Colors.orange;
 
     return Scaffold(
       appBar: AppBar(
@@ -389,7 +412,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
                     minHeight: 12,
                     borderRadius: BorderRadius.circular(6),
                     backgroundColor: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
-                    color: const Color(0xFF005CFF),
+                    color: progressColor,
                   ),
                   const SizedBox(height: 10),
                   Text('$completedClasses / $classLimit Classes ($remainingClasses Classes Remaining)', style: const TextStyle(fontWeight: FontWeight.w500)),
@@ -399,55 +422,117 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
           ),
           const SizedBox(height: 20),
           
-          // DYNAMIC FEE REMINDER
+          // DYNAMIC FEE REMINDER OR COLLECTED BANNER
           if (isFeeReminder)
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: isDark ? Colors.red.shade900.withOpacity(0.3) : Colors.red.shade50,
+                color: isDark ? Colors.orange.shade900.withOpacity(0.3) : Colors.orange.shade50,
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.red.shade200),
+                border: Border.all(color: Colors.orange.shade200),
               ),
-              child: Row(
+              child: Column(
                 children: [
-                  const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 30),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Text(
-                      '⚠ FEE REMINDER\n$remainingClasses classes remaining in this set. Remember to collect the class fee.', 
-                      style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)
-                    ),
+                  Row(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 30),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Text(
+                          '⚠ FEE REMINDER\n$remainingClasses classes remaining. Remember to collect the class fee.', 
+                          style: TextStyle(color: Colors.orange.shade800, fontWeight: FontWeight.bold)
+                        ),
+                      ),
+                    ],
                   ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.check_circle_outline),
+                      label: const Text('Mark Fee as Collected'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () {
+                        setState(() { isFeePaid = true; });
+                      },
+                    ),
+                  )
+                ],
+              ),
+            )
+          else if (isFeePaid)
+             Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: isDark ? Colors.green.shade900.withOpacity(0.3) : Colors.green.shade50,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.green.shade200),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.verified, color: Colors.green, size: 30),
+                  SizedBox(width: 16),
+                  Text('✓ FEE COLLECTED', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 16)),
                 ],
               ),
             ),
           const SizedBox(height: 20),
           
           // CLASS HISTORY LIST
-          const Text('Recent Classes', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const Text('Recent Classes (Swipe left to delete)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 10),
           if (classHistory.isEmpty)
              Center(child: Padding(
                padding: const EdgeInsets.all(20.0),
                child: Text('No classes added in this set yet.', style: TextStyle(color: Colors.grey.shade500)),
              )),
-          ...classHistory.map((cls) => Card(
-            elevation: 0,
-            color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: BorderSide(color: isDark ? Colors.grey.shade800 : Colors.grey.shade300)
-            ),
-            child: ListTile(
-              leading: CircleAvatar(backgroundColor: Colors.blue.withOpacity(0.1), child: const Icon(Icons.menu_book, color: Colors.blue)),
-              title: Text(cls['subject']!, style: const TextStyle(fontWeight: FontWeight.bold)),
-              subtitle: Text('${cls['classNum']} • ${cls['date']}'),
-              trailing: const Icon(Icons.chevron_right),
-            ),
-          )).toList(),
+             
+          // SWIPE TO DELETE FEATURE
+          ...classHistory.asMap().entries.map((entry) {
+            int index = entry.key;
+            var cls = entry.value;
+            return Dismissible(
+              key: UniqueKey(), // Unique key for swipe
+              direction: DismissDirection.endToStart,
+              background: Container(
+                margin: const EdgeInsets.symmetric(vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.red,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                alignment: Alignment.centerRight,
+                padding: const EdgeInsets.only(right: 20),
+                child: const Icon(Icons.delete_sweep, color: Colors.white, size: 30),
+              ),
+              onDismissed: (direction) {
+                setState(() {
+                  classHistory.removeAt(index);
+                  completedClasses--;
+                });
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Class removed.')));
+              },
+              child: Card(
+                elevation: 0,
+                margin: const EdgeInsets.symmetric(vertical: 4),
+                color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(color: isDark ? Colors.grey.shade800 : Colors.grey.shade300)
+                ),
+                child: ListTile(
+                  leading: CircleAvatar(backgroundColor: Colors.blue.withOpacity(0.1), child: const Icon(Icons.menu_book, color: Colors.blue)),
+                  title: Text(cls['subject']!, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text('Class ${cls['classNum']} • ${cls['date']}'),
+                ),
+              ),
+            );
+          }).toList(),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
+      floatingActionButton: completedClasses >= classLimit ? null : FloatingActionButton.extended(
         onPressed: _showAddClassDialog,
         icon: const Icon(Icons.add),
         label: const Text('Add Class', style: TextStyle(fontWeight: FontWeight.bold)),
