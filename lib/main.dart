@@ -1,9 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:local_auth/local_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 bool _isFirstTimeDrawerOpened = true;
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  // ஆப் எப்போதும் செங்குத்தாக (Portrait) மட்டுமே இருக்க
+  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const TutorsDeskApp());
 }
 
@@ -47,15 +53,183 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> {
           seedColor: const Color(0xFF005CFF),
         ),
       ),
-      home: DashboardScreen(
-        toggleTheme: toggleTheme,
-        isDarkMode: _themeMode == ThemeMode.dark,
+      // ஆப் முதலில் Splash Screen-ல் தான் தொடங்கும்!
+      home: SplashScreen(toggleTheme: toggleTheme, isDarkMode: _themeMode == ThemeMode.dark),
+    );
+  }
+}
+
+// --- 1. SPLASH SCREEN ---
+class SplashScreen extends StatefulWidget {
+  final VoidCallback toggleTheme;
+  final bool isDarkMode;
+
+  const SplashScreen({super.key, required this.toggleTheme, required this.isDarkMode});
+
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _checkAuthAndNavigate();
+  }
+
+  Future<void> _checkAuthAndNavigate() async {
+    // 2 வினாடிகள் Splash Screen காண்பிக்கப்படும்
+    await Future.delayed(const Duration(seconds: 2));
+    
+    if (!mounted) return;
+
+    // இப்போதைக்கு App Lock-ஐ default ஆக Enable செய்துள்ளோம்.
+    // (பிற்காலத்தில் இதை Settings-ல் மாற்றுவோம்)
+    bool isAppLockEnabled = true; 
+
+    if (isAppLockEnabled) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => AppLockScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode),
+        ),
+      );
+    } else {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+    
+    return Scaffold(
+      backgroundColor: isDark ? const Color(0xFF121212) : const Color(0xFF005CFF),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.school, size: 80, color: Colors.white),
+            const SizedBox(height: 20),
+            const Text(
+              "Jilaksan_K",
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              "Class & Batch Management System",
+              style: TextStyle(fontSize: 14, color: Colors.white.withOpacity(0.8)),
+            ),
+            const SizedBox(height: 40),
+            const CircularProgressIndicator(color: Colors.white),
+          ],
+        ),
       ),
     );
   }
 }
 
-// --- LOGIC: DYNAMIC DASHBOARD SCREEN ---
+// --- 2. APP LOCK / AUTHENTICATION SCREEN ---
+class AppLockScreen extends StatefulWidget {
+  final VoidCallback toggleTheme;
+  final bool isDarkMode;
+
+  const AppLockScreen({super.key, required this.toggleTheme, required this.isDarkMode});
+
+  @override
+  State<AppLockScreen> createState() => _AppLockScreenState();
+}
+
+class _AppLockScreenState extends State<AppLockScreen> {
+  final LocalAuthentication auth = LocalAuthentication();
+  bool _isAuthenticating = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _authenticate(); // ஆட்டோமேட்டிக்காக Face Lock கேட்கும்
+  }
+
+  Future<void> _authenticate() async {
+    bool authenticated = false;
+    try {
+      setState(() { _isAuthenticating = true; });
+      authenticated = await auth.authenticate(
+        localizedReason: 'Authenticate to continue to Tutor\'s Desk',
+        options: const AuthenticationOptions(
+          stickyAuth: true,
+          biometricOnly: false, // Face/Fingerprint அல்லது போனின் Pattern/PIN கேட்கும்
+        ),
+      );
+    } on PlatformException catch (e) {
+      debugPrint("Authentication Error: $e");
+    } finally {
+      if (mounted) {
+        setState(() { _isAuthenticating = false; });
+      }
+    }
+
+    if (authenticated && mounted) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+    
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.lock_outline, size: 80, color: isDark ? Colors.white : const Color(0xFF005CFF)),
+              const SizedBox(height: 20),
+              const Text(
+                "Welcome Back",
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                "🔐 Authenticate to continue",
+                style: TextStyle(fontSize: 16, color: Colors.grey),
+              ),
+              const SizedBox(height: 40),
+              SizedBox(
+                width: double.infinity,
+                height: 55,
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.fingerprint, size: 28),
+                  label: Text(_isAuthenticating ? 'Authenticating...' : 'Authenticate'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF005CFF),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  ),
+                  onPressed: _isAuthenticating ? null : _authenticate,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// --- 3. LOGIC: DYNAMIC DASHBOARD SCREEN ---
 class DashboardScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
   final bool isDarkMode;
@@ -71,7 +245,6 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  // உண்மையான (Dynamic) லிஸ்ட். இதில் புது Batch-ஐ சேர்க்கலாம்!
   List<Map<String, dynamic>> batches = [
     {
       'batchName': '2027 A',
@@ -138,7 +311,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () async {
-          // CreateBatchScreen-ல் இருந்து வரும் டேட்டாவை வாங்குகிறோம்
           final newBatch = await Navigator.push(
             context, 
             MaterialPageRoute(builder: (context) => const CreateBatchScreen())
@@ -221,10 +393,7 @@ class BatchCard extends StatelessWidget {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    batchName,
-                    style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
+                  Text(batchName, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
                   const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey)
                 ],
               ),
@@ -253,9 +422,7 @@ class BatchCard extends StatelessWidget {
                       : (isDark ? Colors.green.shade900.withOpacity(0.3) : Colors.green.shade50),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
-                    color: isFeeReminder 
-                        ? (isDark ? Colors.red.shade800 : Colors.red.shade100) 
-                        : (isDark ? Colors.green.shade800 : Colors.green.shade100),
+                    color: isFeeReminder ? (isDark ? Colors.red.shade800 : Colors.red.shade100) : (isDark ? Colors.green.shade800 : Colors.green.shade100),
                   ),
                 ),
                 child: Row(
@@ -296,7 +463,6 @@ class BatchCard extends StatelessWidget {
   }
 }
 
-// --- BATCH DETAILS SCREEN ---
 class BatchDetailsScreen extends StatefulWidget {
   final String batchName;
   final int classLimit;
@@ -436,7 +602,6 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
-          // PROGRESS CARD
           Card(
             elevation: isDark ? 2 : 8,
             shadowColor: isDark ? Colors.black54 : Colors.black26,
@@ -572,7 +737,6 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   }
 }
 
-// --- LOGIC: CREATE NEW BATCH SCREEN (Stateful) ---
 class CreateBatchScreen extends StatefulWidget {
   const CreateBatchScreen({super.key});
 
@@ -647,7 +811,6 @@ class _CreateBatchScreenState extends State<CreateBatchScreen> {
                 ),
                 onPressed: () { 
                   if(nameController.text.isNotEmpty) {
-                    // டேட்டாவை முந்தைய ஸ்கிரீனுக்கு அனுப்புகிறோம்!
                     Navigator.pop(context, {
                       'batchName': nameController.text,
                       'classLimit': limitController.text,
@@ -667,7 +830,6 @@ class _CreateBatchScreenState extends State<CreateBatchScreen> {
   }
 }
 
-// --- DEVELOPER PROFILE DRAWER ---
 class DeveloperProfileDrawer extends StatefulWidget {
   const DeveloperProfileDrawer({super.key});
 
@@ -734,7 +896,7 @@ class _DeveloperProfileDrawerState extends State<DeveloperProfileDrawer> {
                 );
               },
               child: const Text(
-                'Jilaksan_K [BScHons (Dat Sc) {R} SUSL]', // Name Updated
+                'Jilaksan_K [BScHons (Dat Sc) {R} SUSL]',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white),
               ),
             ),
