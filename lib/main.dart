@@ -55,7 +55,8 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> {
   }
 }
 
-class DashboardScreen extends StatelessWidget {
+// --- LOGIC: DYNAMIC DASHBOARD SCREEN ---
+class DashboardScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
   final bool isDarkMode;
 
@@ -64,6 +65,35 @@ class DashboardScreen extends StatelessWidget {
     required this.toggleTheme,
     required this.isDarkMode,
   });
+
+  @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  // உண்மையான (Dynamic) லிஸ்ட். இதில் புது Batch-ஐ சேர்க்கலாம்!
+  List<Map<String, dynamic>> batches = [
+    {
+      'batchName': '2027 A',
+      'currentSet': 'Set 03',
+      'progress': '5 / 8 Classes',
+      'completedSets': '2',
+      'totalClasses': '21',
+      'feeStatus': '⚠ Fee Reminder',
+      'isFeeReminder': true,
+      'classLimit': 8,
+    },
+    {
+      'batchName': '2028 B',
+      'currentSet': 'Set 01',
+      'progress': '2 / 8 Classes',
+      'completedSets': '0',
+      'totalClasses': '2',
+      'feeStatus': '✓ Fee Collected',
+      'isFeeReminder': false,
+      'classLimit': 8,
+    }
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -78,39 +108,56 @@ class DashboardScreen extends StatelessWidget {
         elevation: 0,
         actions: [
           IconButton(
-            icon: Icon(isDarkMode ? Icons.light_mode : Icons.dark_mode),
-            onPressed: toggleTheme,
+            icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode),
+            onPressed: widget.toggleTheme,
           ),
         ],
       ),
       drawer: const DeveloperProfileDrawer(),
-      body: ListView(
-        padding: const EdgeInsets.all(16.0),
-        children: const [
-          BatchCard(
-            batchName: '2027 A',
-            currentSet: 'Set 03',
-            progress: '5 / 8 Classes',
-            completedSets: '2',
-            totalClasses: '21',
-            feeStatus: '⚠ Fee Reminder',
-            isFeeReminder: true,
+      body: batches.isEmpty 
+        ? const Center(child: Text("No Batches Yet. Create your first batch!"))
+        : ListView.builder(
+            padding: const EdgeInsets.all(16.0),
+            itemCount: batches.length,
+            itemBuilder: (context, index) {
+              final batch = batches[index];
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 16.0),
+                child: BatchCard(
+                  batchName: batch['batchName'],
+                  currentSet: batch['currentSet'],
+                  progress: batch['progress'],
+                  completedSets: batch['completedSets'],
+                  totalClasses: batch['totalClasses'],
+                  feeStatus: batch['feeStatus'],
+                  isFeeReminder: batch['isFeeReminder'],
+                  classLimit: batch['classLimit'],
+                ),
+              );
+            },
           ),
-          SizedBox(height: 16),
-          BatchCard(
-            batchName: '2028 B',
-            currentSet: 'Set 01',
-            progress: '2 / 8 Classes',
-            completedSets: '0',
-            totalClasses: '2',
-            feeStatus: '✓ Fee Collected',
-            isFeeReminder: false,
-          ),
-        ],
-      ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.push(context, MaterialPageRoute(builder: (context) => const CreateBatchScreen()));
+        onPressed: () async {
+          // CreateBatchScreen-ல் இருந்து வரும் டேட்டாவை வாங்குகிறோம்
+          final newBatch = await Navigator.push(
+            context, 
+            MaterialPageRoute(builder: (context) => const CreateBatchScreen())
+          );
+          
+          if (newBatch != null) {
+            setState(() {
+              batches.add({
+                'batchName': newBatch['batchName'],
+                'currentSet': 'Set 01',
+                'progress': '0 / ${newBatch['classLimit']} Classes',
+                'completedSets': '0',
+                'totalClasses': '0',
+                'feeStatus': '✓ Fee Collected',
+                'isFeeReminder': false,
+                'classLimit': int.parse(newBatch['classLimit'].toString()),
+              });
+            });
+          }
         },
         icon: const Icon(Icons.add),
         label: const Text('Create Batch', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -127,6 +174,7 @@ class BatchCard extends StatelessWidget {
   final String totalClasses;
   final String feeStatus;
   final bool isFeeReminder;
+  final int classLimit;
 
   const BatchCard({
     super.key,
@@ -137,6 +185,7 @@ class BatchCard extends StatelessWidget {
     required this.totalClasses,
     required this.feeStatus,
     required this.isFeeReminder,
+    required this.classLimit,
   });
 
   @override
@@ -157,7 +206,10 @@ class BatchCard extends StatelessWidget {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => BatchDetailsScreen(batchName: batchName),
+              builder: (context) => BatchDetailsScreen(
+                batchName: batchName, 
+                classLimit: classLimit,
+              ),
             ),
           );
         },
@@ -244,32 +296,25 @@ class BatchCard extends StatelessWidget {
   }
 }
 
-// --- LOGIC: BATCH DETAILS DASHBOARD ---
+// --- BATCH DETAILS SCREEN ---
 class BatchDetailsScreen extends StatefulWidget {
   final String batchName;
+  final int classLimit;
 
-  const BatchDetailsScreen({super.key, required this.batchName});
+  const BatchDetailsScreen({super.key, required this.batchName, required this.classLimit});
 
   @override
   State<BatchDetailsScreen> createState() => _BatchDetailsScreenState();
 }
 
 class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
-  int currentSetNumber = 3;
-  int completedClasses = 5;
-  final int classLimit = 8;
-  bool isFeePaid = false; // Fee status tracking
+  int currentSetNumber = 1;
+  int completedClasses = 0;
+  bool isFeePaid = false; 
   
-  List<Map<String, String>> classHistory = [
-    {'date': '29 Aug 2026', 'subject': 'Database Normalization', 'classNum': '5'},
-    {'date': '25 Aug 2026', 'subject': 'Networking', 'classNum': '4'},
-    {'date': '21 Aug 2026', 'subject': 'Binary Systems', 'classNum': '3'},
-    {'date': '17 Aug 2026', 'subject': 'Logic Gates', 'classNum': '2'},
-    {'date': '14 Aug 2026', 'subject': 'Intro to ICT', 'classNum': '1'},
-  ];
+  List<Map<String, String>> classHistory = [];
 
-  // Fee Reminder Logic (Activates at 3 remaining classes if not paid)
-  bool get isFeeReminder => (classLimit - completedClasses) <= 3 && completedClasses < classLimit && !isFeePaid;
+  bool get isFeeReminder => (widget.classLimit - completedClasses) <= 3 && completedClasses < widget.classLimit && !isFeePaid;
 
   String _getFormattedDate() {
     List<String> months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -278,7 +323,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   }
 
   void _showAddClassDialog() {
-    if (completedClasses >= classLimit) return; // Prevent extra opening
+    if (completedClasses >= widget.classLimit) return; 
 
     TextEditingController subjectController = TextEditingController();
     
@@ -290,7 +335,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / $classLimit', 
+              Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / ${widget.classLimit}', 
                 style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 15),
@@ -308,7 +353,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
             ElevatedButton(
               onPressed: () {
                 if (subjectController.text.isNotEmpty) {
-                  Navigator.pop(context); // Close dialog first
+                  Navigator.pop(context); 
                   _addClass(subjectController.text);
                 }
               },
@@ -324,7 +369,6 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   void _addClass(String subject) {
     setState(() {
       completedClasses++;
-      // Add at index 0 so it appears at the top
       classHistory.insert(0, {
         'date': _getFormattedDate(),
         'subject': subject,
@@ -332,8 +376,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
       });
     });
 
-    if (completedClasses >= classLimit) {
-      // Small delay before showing completion dialog
+    if (completedClasses >= widget.classLimit) {
       Future.delayed(const Duration(milliseconds: 400), () {
         _showSetCompletedDialog();
       });
@@ -343,9 +386,9 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   void _showSetCompletedDialog() {
     showDialog(
       context: context,
-      barrierDismissible: false, // Prevents tapping outside
+      barrierDismissible: false, 
       builder: (context) => PopScope(
-        canPop: false, // Prevents closing via Android Back Button!
+        canPop: false, 
         child: AlertDialog(
           icon: const Icon(Icons.verified, color: Colors.green, size: 50),
           title: Text('Set $currentSetNumber Completed!'),
@@ -358,7 +401,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
                   currentSetNumber++;
                   completedClasses = 0; 
                   classHistory.clear(); 
-                  isFeePaid = false; // Reset Fee for new set
+                  isFeePaid = false; 
                 });
               },
               style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
@@ -373,11 +416,10 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   @override
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
-    int remainingClasses = classLimit - completedClasses;
+    int remainingClasses = widget.classLimit - completedClasses;
     
-    // Dynamic Progress Bar Color
     Color progressColor = const Color(0xFF005CFF);
-    if (completedClasses >= classLimit) progressColor = Colors.green;
+    if (completedClasses >= widget.classLimit) progressColor = Colors.green;
     else if (isFeeReminder) progressColor = Colors.orange;
 
     return Scaffold(
@@ -408,21 +450,20 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
                   Text('Set ${currentSetNumber.toString().padLeft(2, '0')}', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 20),
                   LinearProgressIndicator(
-                    value: completedClasses / classLimit,
+                    value: completedClasses / widget.classLimit,
                     minHeight: 12,
                     borderRadius: BorderRadius.circular(6),
                     backgroundColor: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
                     color: progressColor,
                   ),
                   const SizedBox(height: 10),
-                  Text('$completedClasses / $classLimit Classes ($remainingClasses Classes Remaining)', style: const TextStyle(fontWeight: FontWeight.w500)),
+                  Text('$completedClasses / ${widget.classLimit} Classes ($remainingClasses Classes Remaining)', style: const TextStyle(fontWeight: FontWeight.w500)),
                 ],
               ),
             ),
           ),
           const SizedBox(height: 20),
           
-          // DYNAMIC FEE REMINDER OR COLLECTED BANNER
           if (isFeeReminder)
             Container(
               padding: const EdgeInsets.all(16),
@@ -451,13 +492,8 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
                     child: ElevatedButton.icon(
                       icon: const Icon(Icons.check_circle_outline),
                       label: const Text('Mark Fee as Collected'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.orange,
-                        foregroundColor: Colors.white,
-                      ),
-                      onPressed: () {
-                        setState(() { isFeePaid = true; });
-                      },
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white),
+                      onPressed: () { setState(() { isFeePaid = true; }); },
                     ),
                   )
                 ],
@@ -481,7 +517,6 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
             ),
           const SizedBox(height: 20),
           
-          // CLASS HISTORY LIST
           const Text('Recent Classes (Swipe left to delete)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 10),
           if (classHistory.isEmpty)
@@ -490,19 +525,15 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
                child: Text('No classes added in this set yet.', style: TextStyle(color: Colors.grey.shade500)),
              )),
              
-          // SWIPE TO DELETE FEATURE
           ...classHistory.asMap().entries.map((entry) {
             int index = entry.key;
             var cls = entry.value;
             return Dismissible(
-              key: UniqueKey(), // Unique key for swipe
+              key: UniqueKey(), 
               direction: DismissDirection.endToStart,
               background: Container(
                 margin: const EdgeInsets.symmetric(vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.red,
-                  borderRadius: BorderRadius.circular(12),
-                ),
+                decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12)),
                 alignment: Alignment.centerRight,
                 padding: const EdgeInsets.only(right: 20),
                 child: const Icon(Icons.delete_sweep, color: Colors.white, size: 30),
@@ -532,7 +563,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
           }).toList(),
         ],
       ),
-      floatingActionButton: completedClasses >= classLimit ? null : FloatingActionButton.extended(
+      floatingActionButton: completedClasses >= widget.classLimit ? null : FloatingActionButton.extended(
         onPressed: _showAddClassDialog,
         icon: const Icon(Icons.add),
         label: const Text('Add Class', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -541,13 +572,31 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   }
 }
 
-// --- CREATE NEW BATCH SCREEN ---
-class CreateBatchScreen extends StatelessWidget {
+// --- LOGIC: CREATE NEW BATCH SCREEN (Stateful) ---
+class CreateBatchScreen extends StatefulWidget {
   const CreateBatchScreen({super.key});
+
+  @override
+  State<CreateBatchScreen> createState() => _CreateBatchScreenState();
+}
+
+class _CreateBatchScreenState extends State<CreateBatchScreen> {
+  final TextEditingController nameController = TextEditingController();
+  final TextEditingController descController = TextEditingController();
+  final TextEditingController limitController = TextEditingController(text: '8');
+
+  @override
+  void dispose() {
+    nameController.dispose();
+    descController.dispose();
+    limitController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
+    
     return Scaffold(
       appBar: AppBar(title: const Text('Create New Batch'), backgroundColor: Colors.transparent, elevation: 0),
       body: SingleChildScrollView(
@@ -556,6 +605,7 @@ class CreateBatchScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             TextFormField(
+              controller: nameController,
               decoration: InputDecoration(
                 labelText: 'Batch Name (e.g. 2027 A)',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
@@ -565,6 +615,7 @@ class CreateBatchScreen extends StatelessWidget {
             ),
             const SizedBox(height: 20),
             TextFormField(
+              controller: descController,
               maxLines: 3,
               decoration: InputDecoration(
                 labelText: 'Batch Description (Optional)',
@@ -575,7 +626,7 @@ class CreateBatchScreen extends StatelessWidget {
             ),
             const SizedBox(height: 20),
             TextFormField(
-              initialValue: '8',
+              controller: limitController,
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
                 labelText: 'Set Class Limit',
@@ -595,10 +646,16 @@ class CreateBatchScreen extends StatelessWidget {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 ),
                 onPressed: () { 
-                  Navigator.pop(context); 
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Batch Created Successfully!')),
-                  );
+                  if(nameController.text.isNotEmpty) {
+                    // டேட்டாவை முந்தைய ஸ்கிரீனுக்கு அனுப்புகிறோம்!
+                    Navigator.pop(context, {
+                      'batchName': nameController.text,
+                      'classLimit': limitController.text,
+                    }); 
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Batch Created Successfully!')),
+                    );
+                  }
                 },
                 child: const Text('Create Batch', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               ),
@@ -610,6 +667,7 @@ class CreateBatchScreen extends StatelessWidget {
   }
 }
 
+// --- DEVELOPER PROFILE DRAWER ---
 class DeveloperProfileDrawer extends StatefulWidget {
   const DeveloperProfileDrawer({super.key});
 
@@ -676,8 +734,8 @@ class _DeveloperProfileDrawerState extends State<DeveloperProfileDrawer> {
                 );
               },
               child: const Text(
-                'Jilaksan_K [BScHons (Dat Sc) {R}]',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white),
+                'Jilaksan_K [BScHons (Dat Sc) {R} SUSL]', // Name Updated
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white),
               ),
             ),
             accountEmail: const Text('Developer & Admin', style: TextStyle(color: Colors.white70)),
