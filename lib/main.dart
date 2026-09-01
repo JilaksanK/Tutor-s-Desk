@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 void main() {
   runApp(const ClassBatchManagerApp());
@@ -239,19 +238,19 @@ class DeveloperProfileDrawer extends StatelessWidget {
             ),
           ),
           ListTile(
-            leading: const FaIcon(FontAwesomeIcons.whatsapp, color: Colors.green),
+            leading: const Icon(Icons.chat, color: Colors.green),
             title: const Text('WhatsApp'),
             subtitle: const Text('+94 75 169 6798'),
             onTap: () => _launchURL('https://wa.me/94751696798'),
           ),
           ListTile(
-            leading: const FaIcon(FontAwesomeIcons.instagram, color: Colors.pinkAccent),
+            leading: const Icon(Icons.camera_alt, color: Colors.pinkAccent),
             title: const Text('Instagram'),
             subtitle: const Text('jilaksan_k'),
             onTap: () => _launchURL('https://www.instagram.com/jilaksan_k?igsi=bWJocGkxNWY5MG5y'),
           ),
           ListTile(
-            leading: const FaIcon(FontAwesomeIcons.facebook, color: Colors.blue),
+            leading: const Icon(Icons.facebook, color: Colors.blue),
             title: const Text('Facebook'),
             subtitle: const Text('Kanthasamy Jilaksan'),
             onTap: () => _launchURL('https://www.facebook.com/share/1EZxroSv9E/'),
