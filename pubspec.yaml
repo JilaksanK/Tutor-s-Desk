@@ -26,4 +26,4 @@ flutter_launcher_icons:
 flutter:
   uses-material-design: true
   assets:
-    - profile.jpeg
+    - profile.jpg
