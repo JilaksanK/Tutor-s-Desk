@@ -157,7 +157,7 @@ class BatchCard extends StatelessWidget {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => BatchDetailsScreen(batchName: batchName, isFeeReminder: isFeeReminder),
+              builder: (context) => BatchDetailsScreen(batchName: batchName),
             ),
           );
         },
@@ -244,19 +244,122 @@ class BatchCard extends StatelessWidget {
   }
 }
 
-class BatchDetailsScreen extends StatelessWidget {
+// --- LOGIC: BATCH DETAILS DASHBOARD (StatefulWidget) ---
+class BatchDetailsScreen extends StatefulWidget {
   final String batchName;
-  final bool isFeeReminder;
 
-  const BatchDetailsScreen({super.key, required this.batchName, required this.isFeeReminder});
+  const BatchDetailsScreen({super.key, required this.batchName});
+
+  @override
+  State<BatchDetailsScreen> createState() => _BatchDetailsScreenState();
+}
+
+class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
+  // Initial Logic Variables
+  int currentSetNumber = 3;
+  int completedClasses = 5;
+  final int classLimit = 8;
+  
+  // Dynamic Fee Reminder Logic (Activates at 3 remaining classes)
+  bool get isFeeReminder => (classLimit - completedClasses) <= 3 && completedClasses < classLimit;
+
+  // Added Classes History
+  List<Map<String, String>> classHistory = [];
+
+  void _showAddClassDialog() {
+    TextEditingController subjectController = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Add New Class'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / $classLimit', 
+                style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 15),
+              TextField(
+                controller: subjectController,
+                decoration: InputDecoration(
+                  labelText: 'Subject / Description',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (subjectController.text.isNotEmpty) {
+                  _addClass(subjectController.text);
+                  Navigator.pop(context);
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white),
+              child: const Text('Save Class'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _addClass(String subject) {
+    setState(() {
+      classHistory.add({
+        'date': '${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
+        'subject': subject,
+        'classNum': 'Class ${completedClasses + 1}'
+      });
+      completedClasses++;
+
+      // Automatically complete set if limit reached
+      if (completedClasses >= classLimit) {
+        _showSetCompletedDialog();
+      }
+    });
+  }
+
+  void _showSetCompletedDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.verified, color: Colors.green, size: 50),
+        title: Text('Set $currentSetNumber Completed!'),
+        content: const Text('The final class has been added. Generating the next set automatically.'),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              setState(() {
+                currentSetNumber++;
+                completedClasses = 0; // Reset for next set
+                classHistory.clear(); // Clear local list for new set view
+              });
+            },
+            child: const Text('Continue to Next Set'),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
+    int remainingClasses = classLimit - completedClasses;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(batchName, style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(widget.batchName, style: const TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -268,6 +371,7 @@ class BatchDetailsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
+          // PROGRESS CARD
           Card(
             elevation: isDark ? 2 : 8,
             shadowColor: isDark ? Colors.black54 : Colors.black26,
@@ -278,22 +382,24 @@ class BatchDetailsScreen extends StatelessWidget {
                 children: [
                   const Text('CURRENT SET', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, letterSpacing: 1)),
                   const SizedBox(height: 10),
-                  const Text('Set 03', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
+                  Text('Set ${currentSetNumber.toString().padLeft(2, '0')}', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 20),
                   LinearProgressIndicator(
-                    value: 5 / 8,
+                    value: completedClasses / classLimit,
                     minHeight: 12,
                     borderRadius: BorderRadius.circular(6),
                     backgroundColor: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
                     color: const Color(0xFF005CFF),
                   ),
                   const SizedBox(height: 10),
-                  const Text('5 / 8 Classes (3 Classes Remaining)', style: TextStyle(fontWeight: FontWeight.w500)),
+                  Text('$completedClasses / $classLimit Classes ($remainingClasses Classes Remaining)', style: const TextStyle(fontWeight: FontWeight.w500)),
                 ],
               ),
             ),
           ),
           const SizedBox(height: 20),
+          
+          // DYNAMIC FEE REMINDER
           if (isFeeReminder)
             Container(
               padding: const EdgeInsets.all(16),
@@ -302,20 +408,47 @@ class BatchDetailsScreen extends StatelessWidget {
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: Colors.red.shade200),
               ),
-              child: const Row(
+              child: Row(
                 children: [
-                  Icon(Icons.warning_amber_rounded, color: Colors.red, size: 30),
-                  SizedBox(width: 16),
+                  const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 30),
+                  const SizedBox(width: 16),
                   Expanded(
-                    child: Text('⚠ FEE REMINDER\nRemember to collect the class fee.', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+                    child: Text(
+                      '⚠ FEE REMINDER\n$remainingClasses classes remaining in this set. Remember to collect the class fee.', 
+                      style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)
+                    ),
                   ),
                 ],
               ),
             ),
+          const SizedBox(height: 20),
+          
+          // CLASS HISTORY LIST
+          const Text('Recent Classes', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 10),
+          if (classHistory.isEmpty)
+             Center(child: Padding(
+               padding: const EdgeInsets.all(20.0),
+               child: Text('No classes added in this set yet.', style: TextStyle(color: Colors.grey.shade500)),
+             )),
+          ...classHistory.map((cls) => Card(
+            elevation: 0,
+            color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: isDark ? Colors.grey.shade800 : Colors.grey.shade300)
+            ),
+            child: ListTile(
+              leading: CircleAvatar(backgroundColor: Colors.blue.withOpacity(0.1), child: const Icon(Icons.menu_book, color: Colors.blue)),
+              title: Text(cls['subject']!, style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text('${cls['classNum']} • ${cls['date']}'),
+              trailing: const Icon(Icons.chevron_right),
+            ),
+          )).toList(),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {},
+        onPressed: _showAddClassDialog,
         icon: const Icon(Icons.add),
         label: const Text('Add Class', style: TextStyle(fontWeight: FontWeight.bold)),
       ),
@@ -323,6 +456,7 @@ class BatchDetailsScreen extends StatelessWidget {
   }
 }
 
+// --- CREATE NEW BATCH SCREEN ---
 class CreateBatchScreen extends StatelessWidget {
   const CreateBatchScreen({super.key});
 
@@ -345,8 +479,6 @@ class CreateBatchScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 20),
-            
-            // Description பாக்ஸ் மீண்டும் சேர்க்கப்பட்டுள்ளது
             TextFormField(
               maxLines: 3,
               decoration: InputDecoration(
@@ -357,7 +489,6 @@ class CreateBatchScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 20),
-
             TextFormField(
               initialValue: '8',
               keyboardType: TextInputType.number,
@@ -494,7 +625,6 @@ class _DeveloperProfileDrawerState extends State<DeveloperProfileDrawer> {
             subtitle: const Text('jilaksan_k'),
             onTap: () => _launchURL('https://www.instagram.com/jilaksan_k?igsi=bWJocGkxNWY5MG5y'),
           ),
-          // FB லிங்க் மீண்டும் சேர்க்கப்பட்டுள்ளது
           ListTile(
             leading: const Icon(Icons.facebook, color: Colors.blue),
             title: const Text('Facebook'),
