@@ -18,14 +18,7 @@ class ClassBatchManagerApp extends StatelessWidget {
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF005CFF), // One UI Blue
-          background: const Color(0xFFF2F2F7),
-        ),
-        cardTheme: CardTheme(
-          elevation: 0,
-          color: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(24),
-          ),
+          surface: const Color(0xFFF2F2F7),
         ),
       ),
       home: const DashboardScreen(),
@@ -58,7 +51,6 @@ class DashboardScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: const [
-          // Sample Batch Card based on your UI Spec
           BatchCard(
             batchName: '2027 A',
             currentSet: 'Set 03',
@@ -81,9 +73,7 @@ class DashboardScreen extends StatelessWidget {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          // Add Create Batch Action later
-        },
+        onPressed: () {},
         icon: const Icon(Icons.add),
         label: const Text('Create Batch'),
       ),
@@ -115,6 +105,11 @@ class BatchCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
+      elevation: 0,
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(24),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(20.0),
         child: Column(
@@ -227,7 +222,6 @@ class DeveloperProfileDrawer extends StatelessWidget {
             accountEmail: const Text('Developer & Admin'),
             currentAccountPicture: const CircleAvatar(
               backgroundColor: Colors.white,
-              // Jpeg ஆக மாற்றப்பட்டுள்ளது
               backgroundImage: AssetImage('profile.jpeg'),
             ),
           ),
