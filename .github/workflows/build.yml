@@ -1,4 +1,4 @@
-Name: Build Jilaksan Class Manager APK
+name: Build Jilaksan Class Manager APK
 
 on:
   push:
