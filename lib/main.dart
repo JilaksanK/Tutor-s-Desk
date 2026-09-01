@@ -104,10 +104,12 @@ class BatchCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      elevation: 0,
+      elevation: 4, // லேசான ஷேடோ
+      shadowColor: Colors.blue.withOpacity(0.15), // ஷேடோவின் கலர்
       color: Colors.white,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(24),
+        side: BorderSide(color: Colors.grey.shade200, width: 1.5), // மெல்லிய பார்டர்
       ),
       child: Padding(
         padding: const EdgeInsets.all(20.0),
@@ -152,6 +154,10 @@ class BatchCard extends StatelessWidget {
               decoration: BoxDecoration(
                 color: isFeeReminder ? Colors.red.shade50 : Colors.green.shade50,
                 borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: isFeeReminder ? Colors.red.shade100 : Colors.green.shade100,
+                  width: 1,
+                ),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -221,7 +227,7 @@ class DeveloperProfileDrawer extends StatelessWidget {
             accountEmail: const Text('Developer & Admin'),
             currentAccountPicture: const CircleAvatar(
               backgroundColor: Colors.white,
-              backgroundImage: AssetImage('profile.jpeg'),
+              backgroundImage: AssetImage('profile.jpg'),
             ),
           ),
           ListTile(
