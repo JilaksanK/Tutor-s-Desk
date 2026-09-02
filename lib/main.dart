@@ -43,7 +43,7 @@ class SettingsManager {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  await SettingsManager.init(); // SharedPreferences-ஐ தொடங்குகிறோம்
+  await SettingsManager.init(); 
   runApp(const TutorsDeskApp());
 }
 
@@ -201,7 +201,7 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 }
 
-// --- 2. APP LOCK SCREEN (Now Dynamic) ---
+// --- 2. APP LOCK SCREEN ---
 class AppLockScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
   final bool isDarkMode;
@@ -266,13 +266,12 @@ class _AppLockScreenState extends State<AppLockScreen> {
   }
 
   void _showPinDialog() {
-    // PIN Authentication Logic (To be expanded in Phase 2)
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text("Enter App PIN"),
         content: TextField(
-          obscureText: true, keyboardType: TextInputType.number, maxLength: 4,
+          obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true, // FIXED HERE
           onSubmitted: (val) {
             if (val == SettingsManager.appPin) {
               Navigator.pop(context);
@@ -339,10 +338,8 @@ class _AppLockScreenState extends State<AppLockScreen> {
 class AdminGateway {
   static void openSettings(BuildContext context, VoidCallback toggleTheme, bool isDarkMode) {
     if (SettingsManager.adminPin == null) {
-      // First time setup
       _showPinSetupDialog(context, toggleTheme, isDarkMode);
     } else {
-      // Enter existing PIN
       _showPinEntryDialog(context, toggleTheme, isDarkMode);
     }
   }
@@ -359,7 +356,7 @@ class AdminGateway {
           children: [
             const Text("This PIN is required to access Settings, delete classes, and manage batches. Keep it secure!", style: TextStyle(fontSize: 13, color: Colors.grey)),
             const SizedBox(height: 15),
-            TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, decoration: const InputDecoration(labelText: 'Enter 4-digit PIN', border: OutlineInputBorder())),
+            TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true, decoration: const InputDecoration(labelText: 'Enter 4-digit PIN', border: OutlineInputBorder())), // FIXED HERE
           ],
         ),
         actions: [
@@ -386,7 +383,7 @@ class AdminGateway {
       builder: (context) => AlertDialog(
         title: const Text("Enter Admin PIN"),
         content: TextField(
-          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autoFocus: true,
+          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true, // FIXED HERE
           decoration: const InputDecoration(labelText: 'Admin PIN required', border: OutlineInputBorder()),
           onSubmitted: (val) {
             if (val == SettingsManager.adminPin) {
@@ -434,7 +431,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             CheckboxListTile(title: const Text("Face Recognition"), value: SettingsManager.useAppFace, onChanged: (val) => setState(() => SettingsManager.useAppFace = val!)),
             CheckboxListTile(title: const Text("PIN / Password"), value: SettingsManager.useAppPin, onChanged: (val) {
               if (val == true && SettingsManager.appPin == null) {
-                // Open App PIN setup (To be expanded)
                 SettingsManager.appPin = "1234"; // Default dummy for now
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("App PIN set to 1234 (Demo)")));
               }
@@ -444,10 +440,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           
           const Divider(height: 40),
           _buildSectionHeader("Class Deletion Security"),
-          ListTile(
-            title: const Text("Admin PIN"),
-            subtitle: const Text("Compulsory for class deletion"),
-            trailing: const Icon(Icons.lock, color: Colors.red),
+          const ListTile(
+            title: Text("Admin PIN"),
+            subtitle: Text("Compulsory for class deletion"),
+            trailing: Icon(Icons.lock, color: Colors.red),
           ),
           ListTile(
             title: const Text("Secondary Authentication"),
@@ -467,9 +463,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text("Manage / Delete Batches"),
             subtitle: const Text("View and remove batches securely"),
             trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () {
-              // Batch Management Screen routing goes here
-            },
+            onTap: () {},
           ),
         ],
       ),
@@ -485,7 +479,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 }
 
 
-// --- 4. DASHBOARD & OTHER SCREENS (UI remains same, connected Settings Icon) ---
+// --- 4. DASHBOARD & OTHER SCREENS ---
 class DashboardScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
   final bool isDarkMode;
@@ -616,7 +610,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / ${widget.classLimit}', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 15), TextField(controller: subjectController, decoration: InputDecoration(labelText: 'Subject / Description', border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+              const SizedBox(height: 15), TextField(controller: subjectController, decoration: const InputDecoration(labelText: 'Subject / Description', border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))))),
             ],
           ),
           actions: [
@@ -711,7 +705,13 @@ class DeveloperProfileDrawer extends StatelessWidget {
   final bool isDarkMode;
   const DeveloperProfileDrawer({super.key, required this.toggleTheme, required this.isDarkMode});
 
-  Future<void> _launchURL(String urlString) async { if (!await launchUrl(Uri.parse(urlString), mode: LaunchMode.externalApplication)) { debugPrint('Could not launch $url'); } }
+  Future<void> _launchURL(String urlString) async { 
+    final Uri url = Uri.parse(urlString); // FIXED HERE
+    if (!await launchUrl(url, mode: LaunchMode.externalApplication)) { 
+      debugPrint('Could not launch $url'); 
+    } 
+  }
+  
   void _showProfileImage(BuildContext context) { showDialog(context: context, builder: (context) => Dialog(backgroundColor: Colors.transparent, child: InteractiveViewer(panEnabled: true, minScale: 0.5, maxScale: 4.0, child: ClipRRect(borderRadius: BorderRadius.circular(20), child: Image.asset('profile.jpg'))))); }
 
   @override Widget build(BuildContext context) {
@@ -726,18 +726,15 @@ class DeveloperProfileDrawer extends StatelessWidget {
             accountEmail: const Text('Developer & Admin', style: TextStyle(color: Colors.white70)),
             currentAccountPicture: GestureDetector(onTap: () => _showProfileImage(context), child: const Hero(tag: 'profilePic', child: CircleAvatar(backgroundColor: Colors.white, backgroundImage: AssetImage('profile.jpg')))),
           ),
-          
-          // SETTINGS BUTTON CONNECTED HERE!
           ListTile(
             leading: const Icon(Icons.settings, color: Colors.blue), 
             title: const Text('Security & Settings', style: TextStyle(fontWeight: FontWeight.bold)), 
-            trailing: const Icon(Icons.lock, size: 16, color: Colors.red), // Lock icon indicates it's secure
+            trailing: const Icon(Icons.lock, size: 16, color: Colors.red), 
             onTap: () {
-              Navigator.pop(context); // Close Drawer
-              AdminGateway.openSettings(context, toggleTheme, isDarkMode); // Open Secure Settings
+              Navigator.pop(context); 
+              AdminGateway.openSettings(context, toggleTheme, isDarkMode); 
             }
           ),
-          
           const Divider(),
           const Padding(padding: EdgeInsets.only(left: 16, top: 8, bottom: 8), child: Align(alignment: Alignment.centerLeft, child: Text('Social Media', style: TextStyle(color: Colors.grey)))),
           ListTile(leading: const Icon(Icons.chat, color: Colors.green), title: const Text('WhatsApp'), subtitle: const Text('+94 75 169 6798'), onTap: () => _launchURL('https://wa.me/94751696798')),
