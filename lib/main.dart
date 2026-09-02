@@ -4,6 +4,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:local_auth/local_auth.dart';
 
 bool _isFirstTimeDrawerOpened = true;
+bool _isLockScreenVisible = false; // Lock Screen திரையில் உள்ளதா என அறிய
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>(); // Global Navigator
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,8 +20,44 @@ class TutorsDeskApp extends StatefulWidget {
   State<TutorsDeskApp> createState() => _TutorsDeskAppState();
 }
 
-class _TutorsDeskAppState extends State<TutorsDeskApp> {
+// App Lifecycle Observer சேர்க்கப்பட்டுள்ளது (Background Lock-க்காக)
+class _TutorsDeskAppState extends State<TutorsDeskApp> with WidgetsBindingObserver {
   ThemeMode _themeMode = ThemeMode.light;
+  bool _requiresAuth = false; // App minimize ஆகும்போது இது true ஆகும்
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this); // Observer-ஐ தொடங்குகிறோம்
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // App-ஐ விட்டு வெளியே போகும்போதும், உள்ளே வரும்போதும் நடக்கும் மேஜிக்!
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _requiresAuth = true; // App-ஐ விட்டு வெளியே போனால் லாக் தேவை
+    } else if (state == AppLifecycleState.resumed) {
+      // App-க்கு மீண்டும் வரும்போது லாக் ஸ்கிரீன் இல்லையென்றால், உடனடியாக லாக் ஸ்கிரீனைக் காட்டுகிறோம்
+      if (_requiresAuth && !_isLockScreenVisible) {
+        navigatorKey.currentState?.push(
+          MaterialPageRoute(
+            builder: (context) => AppLockScreen(
+              toggleTheme: toggleTheme,
+              isDarkMode: _themeMode == ThemeMode.dark,
+              isFromResume: true, // Resume-ல் இருந்து வருவதை உணர்த்துகிறோம்
+            ),
+          ),
+        );
+        _requiresAuth = false;
+      }
+    }
+  }
 
   void toggleTheme() {
     setState(() {
@@ -30,6 +68,7 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey, // Global Key இணைக்கப்பட்டுள்ளது
       title: "Tutor's Desk",
       debugShowCheckedModeBanner: false,
       themeMode: _themeMode,
@@ -37,26 +76,20 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> {
         useMaterial3: true,
         brightness: Brightness.light,
         scaffoldBackgroundColor: const Color(0xFFE8E8ED), 
-        colorScheme: ColorScheme.fromSeed(
-          brightness: Brightness.light,
-          seedColor: const Color(0xFF005CFF),
-        ),
+        colorScheme: ColorScheme.fromSeed(brightness: Brightness.light, seedColor: const Color(0xFF005CFF)),
       ),
       darkTheme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF121212),
-        colorScheme: ColorScheme.fromSeed(
-          brightness: Brightness.dark,
-          seedColor: const Color(0xFF005CFF),
-        ),
+        colorScheme: ColorScheme.fromSeed(brightness: Brightness.dark, seedColor: const Color(0xFF005CFF)),
       ),
       home: SplashScreen(toggleTheme: toggleTheme, isDarkMode: _themeMode == ThemeMode.dark),
     );
   }
 }
 
-// --- 1. SPLASH SCREEN (With Gradient) ---
+// --- 1. SPLASH SCREEN (With New Logo & Developer Profile) ---
 class SplashScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
   final bool isDarkMode;
@@ -101,26 +134,37 @@ class _SplashScreenState extends State<SplashScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            const Spacer(),
+            // Nammada Logo Section
             Container(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(4),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.2),
+                color: Colors.white,
                 shape: BoxShape.circle,
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 15, offset: const Offset(0, 5))],
               ),
-              child: const Icon(Icons.school, size: 80, color: Colors.white),
+              child: ClipOval(
+                child: Image.asset(
+                  'app_icon.png', 
+                  width: 100, height: 100, fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) => const Icon(Icons.school, size: 80, color: Color(0xFF005CFF)),
+                ),
+              ),
             ),
             const SizedBox(height: 24),
-            const Text(
-              "Tutor's Desk",
-              style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 1.5),
-            ),
+            const Text("Tutor's Desk", style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 1.5)),
             const SizedBox(height: 8),
-            Text(
-              "Class & Batch Management System",
-              style: TextStyle(fontSize: 14, color: Colors.white.withOpacity(0.9)),
-            ),
-            const SizedBox(height: 50),
+            Text("Class & Batch Management System", style: TextStyle(fontSize: 14, color: Colors.white.withOpacity(0.9))),
+            const SizedBox(height: 40),
             const CircularProgressIndicator(color: Colors.white),
+            const Spacer(),
+            // Developer Profile at Splash
+            const Text("Developed By", style: TextStyle(color: Colors.white70, fontSize: 12)),
+            const SizedBox(height: 4),
+            const Text("Jilaksan_K", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 2),
+            const Text("BScHons (Dat Sc) {R} SUSL", style: TextStyle(color: Colors.white70, fontSize: 10)),
+            const SizedBox(height: 30),
           ],
         ),
       ),
@@ -128,12 +172,18 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 }
 
-// --- 2. APP LOCK SCREEN (With Developer Profile) ---
+// --- 2. APP LOCK SCREEN ---
 class AppLockScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
   final bool isDarkMode;
+  final bool isFromResume; // App-ஐ minimize செய்து வந்தால் இது True ஆக இருக்கும்
 
-  const AppLockScreen({super.key, required this.toggleTheme, required this.isDarkMode});
+  const AppLockScreen({
+    super.key, 
+    required this.toggleTheme, 
+    required this.isDarkMode,
+    this.isFromResume = false,
+  });
 
   @override
   State<AppLockScreen> createState() => _AppLockScreenState();
@@ -146,7 +196,14 @@ class _AppLockScreenState extends State<AppLockScreen> {
   @override
   void initState() {
     super.initState();
+    _isLockScreenVisible = true; // Lock Screen ஓபன் ஆகிவிட்டது
     _authenticate();
+  }
+
+  @override
+  void dispose() {
+    _isLockScreenVisible = false; // Lock Screen க்ளோஸ் ஆகிவிட்டது
+    super.dispose();
   }
 
   Future<void> _authenticate() async {
@@ -159,7 +216,7 @@ class _AppLockScreenState extends State<AppLockScreen> {
       if (canCheckBiometrics || isSupported) {
         authenticated = await auth.authenticate(
           localizedReason: 'Authenticate to continue to Tutor\'s Desk',
-          options: const AuthenticationOptions(stickyAuth: true, biometricOnly: false),
+          options: const AuthenticationOptions(stickyAuth: true, biometricOnly: false), // biometricOnly false என்றால் PIN கேட்கும்
         );
       } else {
         authenticated = true; 
@@ -172,12 +229,16 @@ class _AppLockScreenState extends State<AppLockScreen> {
     }
 
     if (authenticated && mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode),
-        ),
-      );
+      if (widget.isFromResume) {
+        // Resume-ல் இருந்து வந்தால், Lock Screen-ஐ மட்டும் Pop செய்கிறோம் (பழைய இடத்திற்கே செல்லும்)
+        Navigator.pop(context);
+      } else {
+        // முதலில் ஆப் ஓபன் ஆகும் போது Dashboard-க்கு செல்கிறோம்
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode)),
+        );
+      }
     }
   }
 
@@ -192,98 +253,94 @@ class _AppLockScreenState extends State<AppLockScreen> {
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
     
-    return Scaffold(
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.lock_outline, size: 80, color: isDark ? Colors.white : const Color(0xFF005CFF)),
-                      const SizedBox(height: 20),
-                      const Text("Welcome Back", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 8),
-                      const Text("🔐 Authenticate to continue", style: TextStyle(fontSize: 16, color: Colors.grey)),
-                      const SizedBox(height: 40),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 55,
-                        child: ElevatedButton.icon(
-                          icon: const Icon(Icons.fingerprint, size: 28),
-                          label: Text(_isAuthenticating ? 'Authenticating...' : 'Tap to Authenticate'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF005CFF),
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+    // PopScope: Lock Screen-ல் இருக்கும்போது Back Button-ஐ அழுத்தினால் ஆப்பிற்குள் செல்லாமல் தடுக்கும் பாதுகாப்பு!
+    return PopScope(
+      canPop: false, 
+      child: Scaffold(
+        body: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.lock_outline, size: 80, color: isDark ? Colors.white : const Color(0xFF005CFF)),
+                        const SizedBox(height: 20),
+                        const Text("Welcome Back", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        const Text("🔐 Authenticate to continue", style: TextStyle(fontSize: 16, color: Colors.grey)),
+                        const SizedBox(height: 40),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 55,
+                          child: ElevatedButton.icon(
+                            icon: const Icon(Icons.fingerprint, size: 28),
+                            label: Text(_isAuthenticating ? 'Authenticating...' : 'Tap to Authenticate'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF005CFF),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                            ),
+                            onPressed: _isAuthenticating ? null : _authenticate,
                           ),
-                          onPressed: _isAuthenticating ? null : _authenticate,
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
-                boxShadow: [
-                  BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text("Developed By", style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      const CircleAvatar(
-                        radius: 24,
-                        backgroundColor: Color(0xFF005CFF),
-                        backgroundImage: AssetImage('profile.jpg'),
-                      ),
-                      const SizedBox(width: 16),
-                      const Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text("Jilaksan_K", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                            Text("BScHons (Dat Sc) {R} SUSL", style: TextStyle(color: Colors.grey, fontSize: 12)),
-                          ],
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text("Developed By", style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const CircleAvatar(
+                          radius: 24,
+                          backgroundColor: Color(0xFF005CFF),
+                          backgroundImage: AssetImage('profile.jpg'),
                         ),
-                      ),
-                      Row(
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.chat, color: Colors.green, size: 20),
-                            onPressed: () => _launchURL('https://wa.me/94751696798'),
+                        const SizedBox(width: 16),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text("Jilaksan_K", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                              Text("BScHons (Dat Sc) {R} SUSL", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                            ],
                           ),
-                          IconButton(
-                            icon: const Icon(Icons.camera_alt, color: Colors.pinkAccent, size: 20),
-                            onPressed: () => _launchURL('https://www.instagram.com/jilaksan_k?igsi=bWJocGkxNWY5MG5y'),
-                          ),
-                        ],
-                      )
-                    ],
-                  ),
-                ],
-              ),
-            )
-          ],
+                        ),
+                        Row(
+                          children: [
+                            IconButton(icon: const Icon(Icons.chat, color: Colors.green, size: 20), onPressed: () => _launchURL('https://wa.me/94751696798')),
+                            IconButton(icon: const Icon(Icons.camera_alt, color: Colors.pinkAccent, size: 20), onPressed: () => _launchURL('https://www.instagram.com/jilaksan_k?igsi=bWJocGkxNWY5MG5y')),
+                          ],
+                        )
+                      ],
+                    ),
+                  ],
+                ),
+              )
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-// --- 3. DASHBOARD & OTHER SCREENS ---
+// --- 3. DASHBOARD & OTHER SCREENS (No core changes below) ---
 class DashboardScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
   final bool isDarkMode;
@@ -305,12 +362,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text("Tutor's Desk", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5)),
-        centerTitle: true,
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        actions: [
-          IconButton(icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode), onPressed: widget.toggleTheme),
-        ],
+        centerTitle: true, backgroundColor: Colors.transparent, elevation: 0,
+        actions: [IconButton(icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode), onPressed: widget.toggleTheme)],
       ),
       drawer: const DeveloperProfileDrawer(),
       body: batches.isEmpty 
@@ -369,9 +422,7 @@ class BatchCard extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24), side: BorderSide(color: isDark ? Colors.grey.shade800 : Colors.white, width: 1.5)),
       child: InkWell(
         borderRadius: BorderRadius.circular(24),
-        onTap: () {
-          Navigator.push(context, MaterialPageRoute(builder: (context) => BatchDetailsScreen(batchName: batchName, classLimit: classLimit)));
-        },
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => BatchDetailsScreen(batchName: batchName, classLimit: classLimit))),
         child: Padding(
           padding: const EdgeInsets.all(20.0),
           child: Column(
