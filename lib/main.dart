@@ -41,13 +41,6 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> {
           brightness: Brightness.light,
           seedColor: const Color(0xFF005CFF),
         ),
-        // One UI Style Smooth Animations
-        pageTransitionsTheme: const PageTransitionsTheme(
-          builders: {
-            TargetPlatform.android: ZoomPageTransitionsBuilder(),
-            TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-          },
-        ),
       ),
       darkTheme: ThemeData(
         useMaterial3: true,
@@ -56,12 +49,6 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> {
         colorScheme: ColorScheme.fromSeed(
           brightness: Brightness.dark,
           seedColor: const Color(0xFF005CFF),
-        ),
-        pageTransitionsTheme: const PageTransitionsTheme(
-          builders: {
-            TargetPlatform.android: ZoomPageTransitionsBuilder(),
-            TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-          },
         ),
       ),
       home: SplashScreen(toggleTheme: toggleTheme, isDarkMode: _themeMode == ThemeMode.dark),
@@ -166,7 +153,6 @@ class _AppLockScreenState extends State<AppLockScreen> {
     bool authenticated = false;
     try {
       setState(() { _isAuthenticating = true; });
-      // போனில் Biometric சப்போர்ட் உள்ளதா என சரிபார்க்கிறோம்
       bool canCheckBiometrics = await auth.canCheckBiometrics;
       bool isSupported = await auth.isDeviceSupported();
 
@@ -176,12 +162,11 @@ class _AppLockScreenState extends State<AppLockScreen> {
           options: const AuthenticationOptions(stickyAuth: true, biometricOnly: false),
         );
       } else {
-        // போனில் லாக் செட்டப் இல்லை என்றால் தானாகவே உள்ளே செல்லும்படி தற்காலிக பைபாஸ்
         authenticated = true; 
       }
     } catch (e) {
       debugPrint("Auth Error: $e");
-      authenticated = true; // Development சமயத்தில் எர்ரர் வந்தால் பைபாஸ் செய்ய
+      authenticated = true; 
     } finally {
       if (mounted) setState(() { _isAuthenticating = false; });
     }
@@ -243,7 +228,6 @@ class _AppLockScreenState extends State<AppLockScreen> {
                 ),
               ),
             ),
-            // Developer Profile Section at the bottom
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
@@ -299,8 +283,7 @@ class _AppLockScreenState extends State<AppLockScreen> {
   }
 }
 
-// --- 3. DASHBOARD & OTHER SCREENS (No changes, included for completeness) ---
-
+// --- 3. DASHBOARD & OTHER SCREENS ---
 class DashboardScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
   final bool isDarkMode;
