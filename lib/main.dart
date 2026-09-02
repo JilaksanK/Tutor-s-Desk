@@ -8,7 +8,15 @@ bool _isFirstTimeDrawerOpened = true;
 bool _isLockScreenVisible = false; 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>(); 
 
-// --- SECURITY & SETTINGS MANAGER (SharedPreferences) ---
+// --- GLOBAL APP DATA ---
+class AppData {
+  static List<Map<String, dynamic>> batches = [
+    {'batchName': '2027 A', 'currentSet': 'Set 03', 'progress': '5 / 8 Classes', 'completedSets': '2', 'totalClasses': '21', 'feeStatus': '⚠ Fee Reminder', 'isFeeReminder': true, 'classLimit': 8},
+    {'batchName': '2028 B', 'currentSet': 'Set 01', 'progress': '2 / 8 Classes', 'completedSets': '0', 'totalClasses': '2', 'feeStatus': '✓ Fee Collected', 'isFeeReminder': false, 'classLimit': 8}
+  ];
+}
+
+// --- SECURITY & SETTINGS MANAGER ---
 class SettingsManager {
   static late SharedPreferences prefs;
 
@@ -36,8 +44,86 @@ class SettingsManager {
   static String? get adminPin => prefs.getString('admin_pin');
   static set adminPin(String? val) => val == null ? prefs.remove('admin_pin') : prefs.setString('admin_pin', val);
 
-  static String get classDeleteBiometric => prefs.getString('delete_biometric') ?? 'fingerprint'; // 'fingerprint' or 'face'
+  static String get classDeleteBiometric => prefs.getString('delete_biometric') ?? 'fingerprint'; 
   static set classDeleteBiometric(String val) => prefs.setString('delete_biometric', val);
+
+  static String get settingsBiometric => prefs.getString('settings_biometric') ?? 'fingerprint'; 
+  static set settingsBiometric(String val) => prefs.setString('settings_biometric', val);
+}
+
+// --- SECURITY GATEWAY (Core Auth Logic) ---
+class SecurityGateway {
+  static final LocalAuthentication _auth = LocalAuthentication();
+
+  // Settings-ல் மாற்றங்கள் செய்ய Biometric Auth (Face or Fingerprint)
+  static Future<bool> verifySettingsModification(BuildContext context) async {
+    try {
+      bool canCheck = await _auth.canCheckBiometrics;
+      if (!canCheck) return true; // Simulator / No Hardware bypass
+      
+      return await _auth.authenticate(
+        localizedReason: 'Authenticate to modify Security Settings',
+        options: const AuthenticationOptions(stickyAuth: true, biometricOnly: true),
+      );
+    } catch (e) {
+      debugPrint("Auth Error: $e");
+      return false;
+    }
+  }
+
+  // Class Delete செய்ய Admin PIN + Biometric Auth
+  static Future<bool> verifyClassDeletion(BuildContext context) async {
+    bool pinValid = await _askAdminPin(context);
+    if (!pinValid) return false;
+
+    // PIN சரியானால் மட்டும் Biometric கேட்கும்
+    try {
+      bool canCheck = await _auth.canCheckBiometrics;
+      if (!canCheck) return true;
+      
+      return await _auth.authenticate(
+        localizedReason: 'Verify Biometric to Delete Class',
+        options: const AuthenticationOptions(stickyAuth: true, biometricOnly: true),
+      );
+    } catch (e) {
+      debugPrint("Auth Error: $e");
+      return false;
+    }
+  }
+
+  // Helper for Admin PIN Popup
+  static Future<bool> _askAdminPin(BuildContext context) async {
+    bool isSuccess = false;
+    TextEditingController pinCtrl = TextEditingController();
+    
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text("Enter Admin PIN"),
+        content: TextField(
+          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true,
+          decoration: const InputDecoration(labelText: 'Compulsory for deletion', border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () {
+              if (pinCtrl.text == SettingsManager.adminPin) {
+                isSuccess = true;
+                Navigator.pop(context);
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect Admin PIN!', style: TextStyle(color: Colors.white)), backgroundColor: Colors.red));
+                Navigator.pop(context);
+              }
+            },
+            child: const Text("Verify"),
+          )
+        ],
+      ),
+    );
+    return isSuccess;
+  }
 }
 
 void main() async {
@@ -73,30 +159,16 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> with WidgetsBindingObserv
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      if (SettingsManager.isAppLockEnabled) {
-        _requiresAuth = true; 
-      }
+      if (SettingsManager.isAppLockEnabled) _requiresAuth = true; 
     } else if (state == AppLifecycleState.resumed) {
       if (_requiresAuth && !_isLockScreenVisible && SettingsManager.isAppLockEnabled) {
-        navigatorKey.currentState?.push(
-          MaterialPageRoute(
-            builder: (context) => AppLockScreen(
-              toggleTheme: toggleTheme,
-              isDarkMode: _themeMode == ThemeMode.dark,
-              isFromResume: true, 
-            ),
-          ),
-        );
+        navigatorKey.currentState?.push(MaterialPageRoute(builder: (context) => AppLockScreen(toggleTheme: toggleTheme, isDarkMode: _themeMode == ThemeMode.dark, isFromResume: true)));
         _requiresAuth = false;
       }
     }
   }
 
-  void toggleTheme() {
-    setState(() {
-      _themeMode = _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
-    });
-  }
+  void toggleTheme() { setState(() { _themeMode = _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light; }); }
 
   @override
   Widget build(BuildContext context) {
@@ -105,18 +177,8 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> with WidgetsBindingObserv
       title: "Tutor's Desk",
       debugShowCheckedModeBanner: false,
       themeMode: _themeMode,
-      theme: ThemeData(
-        useMaterial3: true,
-        brightness: Brightness.light,
-        scaffoldBackgroundColor: const Color(0xFFE8E8ED), 
-        colorScheme: ColorScheme.fromSeed(brightness: Brightness.light, seedColor: const Color(0xFF005CFF)),
-      ),
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF121212),
-        colorScheme: ColorScheme.fromSeed(brightness: Brightness.dark, seedColor: const Color(0xFF005CFF)),
-      ),
+      theme: ThemeData(useMaterial3: true, brightness: Brightness.light, scaffoldBackgroundColor: const Color(0xFFE8E8ED), colorScheme: ColorScheme.fromSeed(brightness: Brightness.light, seedColor: const Color(0xFF005CFF))),
+      darkTheme: ThemeData(useMaterial3: true, brightness: Brightness.dark, scaffoldBackgroundColor: const Color(0xFF121212), colorScheme: ColorScheme.fromSeed(brightness: Brightness.dark, seedColor: const Color(0xFF005CFF))),
       home: SplashScreen(toggleTheme: toggleTheme, isDarkMode: _themeMode == ThemeMode.dark),
     );
   }
@@ -124,13 +186,9 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> with WidgetsBindingObserv
 
 // --- 1. SPLASH SCREEN ---
 class SplashScreen extends StatefulWidget {
-  final VoidCallback toggleTheme;
-  final bool isDarkMode;
-
+  final VoidCallback toggleTheme; final bool isDarkMode;
   const SplashScreen({super.key, required this.toggleTheme, required this.isDarkMode});
-
-  @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  @override State<SplashScreen> createState() => _SplashScreenState();
 }
 
 class _SplashScreenState extends State<SplashScreen> {
@@ -139,61 +197,29 @@ class _SplashScreenState extends State<SplashScreen> {
     super.initState();
     _checkAuthAndNavigate();
   }
-
   Future<void> _checkAuthAndNavigate() async {
     await Future.delayed(const Duration(seconds: 2));
     if (!mounted) return;
-
     if (SettingsManager.isAppLockEnabled) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => AppLockScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode)),
-      );
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => AppLockScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode)));
     } else {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode)),
-      );
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode)));
     }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Container(
-        width: double.infinity,
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(colors: [Color(0xFF005CFF), Color(0xFF00D2FF)], begin: Alignment.topLeft, end: Alignment.bottomRight),
-        ),
+        width: double.infinity, decoration: const BoxDecoration(gradient: LinearGradient(colors: [Color(0xFF005CFF), Color(0xFF00D2FF)], begin: Alignment.topLeft, end: Alignment.bottomRight)),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Spacer(),
-            Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(20), 
-                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 15, offset: const Offset(0, 5))],
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: Image.asset('app_icon.png', width: 100, height: 100, fit: BoxFit.contain,
-                  errorBuilder: (context, error, stackTrace) => const Icon(Icons.school, size: 80, color: Colors.white),
-                ),
-              ),
-            ),
-            const SizedBox(height: 24),
-            const Text("Tutor's Desk", style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 1.5)),
-            const SizedBox(height: 8),
-            Text("Class & Batch Management System", style: TextStyle(fontSize: 14, color: Colors.white.withOpacity(0.9))),
-            const SizedBox(height: 40),
-            const CircularProgressIndicator(color: Colors.white),
-            const Spacer(),
-            const Text("Developed By", style: TextStyle(color: Colors.white70, fontSize: 12)),
-            const SizedBox(height: 4),
-            const Text("Jilaksan_K", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 2),
-            const Text("BScHons (Dat Sc) {R} SUSL", style: TextStyle(color: Colors.white70, fontSize: 10)),
-            const SizedBox(height: 30),
+            Container(decoration: BoxDecoration(borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 15, offset: const Offset(0, 5))]), child: ClipRRect(borderRadius: BorderRadius.circular(20), child: Image.asset('app_icon.png', width: 100, height: 100, fit: BoxFit.contain, errorBuilder: (context, error, stackTrace) => const Icon(Icons.school, size: 80, color: Colors.white)))),
+            const SizedBox(height: 24), const Text("Tutor's Desk", style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 1.5)),
+            const SizedBox(height: 8), Text("Class & Batch Management System", style: TextStyle(fontSize: 14, color: Colors.white.withOpacity(0.9))),
+            const SizedBox(height: 40), const CircularProgressIndicator(color: Colors.white), const Spacer(),
+            const Text("Developed By", style: TextStyle(color: Colors.white70, fontSize: 12)), const SizedBox(height: 4), const Text("Jilaksan_K", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)), const SizedBox(height: 2), const Text("BScHons (Dat Sc) {R} SUSL", style: TextStyle(color: Colors.white70, fontSize: 10)), const SizedBox(height: 30),
           ],
         ),
       ),
@@ -203,14 +229,9 @@ class _SplashScreenState extends State<SplashScreen> {
 
 // --- 2. APP LOCK SCREEN ---
 class AppLockScreen extends StatefulWidget {
-  final VoidCallback toggleTheme;
-  final bool isDarkMode;
-  final bool isFromResume; 
-
+  final VoidCallback toggleTheme; final bool isDarkMode; final bool isFromResume; 
   const AppLockScreen({super.key, required this.toggleTheme, required this.isDarkMode, this.isFromResume = false});
-
-  @override
-  State<AppLockScreen> createState() => _AppLockScreenState();
+  @override State<AppLockScreen> createState() => _AppLockScreenState();
 }
 
 class _AppLockScreenState extends State<AppLockScreen> {
@@ -221,48 +242,28 @@ class _AppLockScreenState extends State<AppLockScreen> {
   void initState() {
     super.initState();
     _isLockScreenVisible = true; 
-    if (SettingsManager.useAppFace || SettingsManager.useAppFingerprint) {
-      _authenticate();
-    }
+    if (SettingsManager.useAppFace || SettingsManager.useAppFingerprint) _authenticate();
   }
 
   @override
-  void dispose() {
-    _isLockScreenVisible = false; 
-    super.dispose();
-  }
+  void dispose() { _isLockScreenVisible = false; super.dispose(); }
 
   Future<void> _authenticate() async {
     bool authenticated = false;
     try {
       setState(() { _isAuthenticating = true; });
-      bool canCheckBiometrics = await auth.canCheckBiometrics;
-
-      if (canCheckBiometrics) {
-        authenticated = await auth.authenticate(
-          localizedReason: 'Authenticate to unlock Tutor\'s Desk',
-          options: const AuthenticationOptions(stickyAuth: true, biometricOnly: true), 
-        );
+      if (await auth.canCheckBiometrics) {
+        authenticated = await auth.authenticate(localizedReason: 'Authenticate to unlock Tutor\'s Desk', options: const AuthenticationOptions(stickyAuth: true, biometricOnly: true));
       }
-    } catch (e) {
-      debugPrint("Auth Error: $e");
-    } finally {
-      if (mounted) setState(() { _isAuthenticating = false; });
-    }
-
+    } catch (e) { debugPrint("Auth Error: $e"); } 
+    finally { if (mounted) setState(() { _isAuthenticating = false; }); }
     if (authenticated) _onUnlockSuccess();
   }
 
   void _onUnlockSuccess() {
     if (!mounted) return;
-    if (widget.isFromResume) {
-      Navigator.pop(context);
-    } else {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode)),
-      );
-    }
+    if (widget.isFromResume) { Navigator.pop(context); } 
+    else { Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode))); }
   }
 
   void _showPinDialog() {
@@ -271,14 +272,10 @@ class _AppLockScreenState extends State<AppLockScreen> {
       builder: (context) => AlertDialog(
         title: const Text("Enter App PIN"),
         content: TextField(
-          obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true, // FIXED HERE
+          obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true,
           onSubmitted: (val) {
-            if (val == SettingsManager.appPin) {
-              Navigator.pop(context);
-              _onUnlockSuccess();
-            } else {
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect PIN')));
-            }
+            if (val == SettingsManager.appPin) { Navigator.pop(context); _onUnlockSuccess(); } 
+            else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect PIN'))); }
           },
         ),
       ),
@@ -289,6 +286,11 @@ class _AppLockScreenState extends State<AppLockScreen> {
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
     
+    // Dynamic Icon Logic: Face vs Fingerprint
+    bool onlyFace = SettingsManager.useAppFace && !SettingsManager.useAppFingerprint;
+    IconData authIcon = onlyFace ? Icons.face : Icons.fingerprint;
+    String authLabel = onlyFace ? 'Use Face Recognition' : 'Use Biometrics';
+
     return PopScope(
       canPop: false, 
       child: Scaffold(
@@ -299,16 +301,14 @@ class _AppLockScreenState extends State<AppLockScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.lock_outline, size: 80, color: isDark ? Colors.white : const Color(0xFF005CFF)),
-                  const SizedBox(height: 20),
-                  const Text("App Locked", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 40),
+                  Icon(Icons.lock_outline, size: 80, color: isDark ? Colors.white : const Color(0xFF005CFF)), const SizedBox(height: 20),
+                  const Text("App Locked", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)), const SizedBox(height: 40),
                   if (SettingsManager.useAppFace || SettingsManager.useAppFingerprint)
                     SizedBox(
                       width: double.infinity, height: 55,
                       child: ElevatedButton.icon(
-                        icon: const Icon(Icons.fingerprint, size: 28),
-                        label: Text(_isAuthenticating ? 'Authenticating...' : 'Use Biometrics'),
+                        icon: Icon(authIcon, size: 28),
+                        label: Text(_isAuthenticating ? 'Authenticating...' : authLabel),
                         style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white),
                         onPressed: _isAuthenticating ? null : _authenticate,
                       ),
@@ -318,10 +318,8 @@ class _AppLockScreenState extends State<AppLockScreen> {
                     SizedBox(
                       width: double.infinity, height: 55,
                       child: OutlinedButton.icon(
-                        icon: const Icon(Icons.pin),
-                        label: const Text('Use PIN'),
-                        style: OutlinedButton.styleFrom(foregroundColor: isDark ? Colors.white : const Color(0xFF005CFF)),
-                        onPressed: _showPinDialog,
+                        icon: const Icon(Icons.pin), label: const Text('Use PIN'),
+                        style: OutlinedButton.styleFrom(foregroundColor: isDark ? Colors.white : const Color(0xFF005CFF)), onPressed: _showPinDialog,
                       ),
                     ),
                 ],
@@ -343,39 +341,26 @@ class AdminGateway {
       _showPinEntryDialog(context, toggleTheme, isDarkMode);
     }
   }
-
   static void _showPinSetupDialog(BuildContext context, VoidCallback toggleTheme, bool isDarkMode) {
     TextEditingController pinCtrl = TextEditingController();
     showDialog(
-      context: context,
-      barrierDismissible: false,
+      context: context, barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text("Set Admin PIN"),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text("This PIN is required to access Settings, delete classes, and manage batches. Keep it secure!", style: TextStyle(fontSize: 13, color: Colors.grey)),
-            const SizedBox(height: 15),
-            TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true, decoration: const InputDecoration(labelText: 'Enter 4-digit PIN', border: OutlineInputBorder())), // FIXED HERE
+            const Text("This PIN is required to access Settings, delete classes, and manage batches.", style: TextStyle(fontSize: 13, color: Colors.grey)), const SizedBox(height: 15),
+            TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true, decoration: const InputDecoration(labelText: 'Enter 4-digit PIN', border: OutlineInputBorder())),
           ],
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-          ElevatedButton(
-            onPressed: () {
-              if (pinCtrl.text.length == 4) {
-                SettingsManager.adminPin = pinCtrl.text;
-                Navigator.pop(context);
-                Navigator.push(context, MaterialPageRoute(builder: (context) => SettingsScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode)));
-              }
-            },
-            child: const Text("Save & Continue"),
-          )
+          ElevatedButton(onPressed: () { if (pinCtrl.text.length == 4) { SettingsManager.adminPin = pinCtrl.text; Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => SettingsScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode))); } }, child: const Text("Save & Continue"))
         ],
       ),
     );
   }
-
   static void _showPinEntryDialog(BuildContext context, VoidCallback toggleTheme, bool isDarkMode) {
     TextEditingController pinCtrl = TextEditingController();
     showDialog(
@@ -383,15 +368,11 @@ class AdminGateway {
       builder: (context) => AlertDialog(
         title: const Text("Enter Admin PIN"),
         content: TextField(
-          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true, // FIXED HERE
+          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true,
           decoration: const InputDecoration(labelText: 'Admin PIN required', border: OutlineInputBorder()),
           onSubmitted: (val) {
-            if (val == SettingsManager.adminPin) {
-              Navigator.pop(context);
-              Navigator.push(context, MaterialPageRoute(builder: (context) => SettingsScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode)));
-            } else {
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect Admin PIN! Access Denied.', style: TextStyle(color: Colors.white)), backgroundColor: Colors.red));
-            }
+            if (val == SettingsManager.adminPin) { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => SettingsScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode))); } 
+            else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect Admin PIN!', style: TextStyle(color: Colors.white)), backgroundColor: Colors.red)); }
           },
         ),
       ),
@@ -400,15 +381,23 @@ class AdminGateway {
 }
 
 class SettingsScreen extends StatefulWidget {
-  final VoidCallback toggleTheme;
-  final bool isDarkMode;
+  final VoidCallback toggleTheme; final bool isDarkMode;
   const SettingsScreen({super.key, required this.toggleTheme, required this.isDarkMode});
-
-  @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
+  @override State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  // Wrapper function to require auth before changing any setting
+  Future<void> _authAndAction(Function action) async {
+    bool isAuth = await SecurityGateway.verifySettingsModification(context);
+    if (isAuth) {
+      action();
+      setState(() {});
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authentication failed!'), backgroundColor: Colors.red));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -416,64 +405,107 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          _buildSectionHeader("Settings Security"),
+          ListTile(
+            title: const Text("Settings Modification Auth"),
+            subtitle: Text("Currently: ${SettingsManager.settingsBiometric.toUpperCase()}"),
+            trailing: const Icon(Icons.shield, color: Colors.blue),
+            onTap: () => _authAndAction(() {
+              SettingsManager.settingsBiometric = SettingsManager.settingsBiometric == 'fingerprint' ? 'face' : 'fingerprint';
+            }),
+          ),
+          const Divider(height: 40),
+
           _buildSectionHeader("App Opening Lock"),
           SwitchListTile(
             title: const Text("Enable App Lock", style: TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: const Text("Require authentication when opening the app"),
+            subtitle: const Text("Require auth when opening app"),
             value: SettingsManager.isAppLockEnabled,
             activeColor: const Color(0xFF005CFF),
-            onChanged: (val) {
-              setState(() => SettingsManager.isAppLockEnabled = val);
-            },
+            onChanged: (val) => _authAndAction(() { SettingsManager.isAppLockEnabled = val; }),
           ),
           if (SettingsManager.isAppLockEnabled) ...[
-            CheckboxListTile(title: const Text("Fingerprint"), value: SettingsManager.useAppFingerprint, onChanged: (val) => setState(() => SettingsManager.useAppFingerprint = val!)),
-            CheckboxListTile(title: const Text("Face Recognition"), value: SettingsManager.useAppFace, onChanged: (val) => setState(() => SettingsManager.useAppFace = val!)),
-            CheckboxListTile(title: const Text("PIN / Password"), value: SettingsManager.useAppPin, onChanged: (val) {
+            CheckboxListTile(title: const Text("Fingerprint"), value: SettingsManager.useAppFingerprint, onChanged: (val) => _authAndAction(() => SettingsManager.useAppFingerprint = val!)),
+            CheckboxListTile(title: const Text("Face Recognition"), value: SettingsManager.useAppFace, onChanged: (val) => _authAndAction(() => SettingsManager.useAppFace = val!)),
+            CheckboxListTile(title: const Text("PIN / Password"), value: SettingsManager.useAppPin, onChanged: (val) => _authAndAction(() {
               if (val == true && SettingsManager.appPin == null) {
-                SettingsManager.appPin = "1234"; // Default dummy for now
+                SettingsManager.appPin = "1234"; // Default dummy
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("App PIN set to 1234 (Demo)")));
               }
-              setState(() => SettingsManager.useAppPin = val!);
-            }),
+              SettingsManager.useAppPin = val!;
+            })),
           ],
-          
           const Divider(height: 40),
+
           _buildSectionHeader("Class Deletion Security"),
-          const ListTile(
-            title: Text("Admin PIN"),
-            subtitle: Text("Compulsory for class deletion"),
-            trailing: Icon(Icons.lock, color: Colors.red),
-          ),
+          const ListTile(title: Text("Admin PIN"), subtitle: Text("Compulsory for class deletion"), trailing: Icon(Icons.lock, color: Colors.red)),
           ListTile(
             title: const Text("Secondary Authentication"),
             subtitle: Text("Currently: ${SettingsManager.classDeleteBiometric.toUpperCase()}"),
             trailing: const Icon(Icons.edit),
-            onTap: () {
-               setState(() {
-                 SettingsManager.classDeleteBiometric = SettingsManager.classDeleteBiometric == 'fingerprint' ? 'face' : 'fingerprint';
-               });
-            },
+            onTap: () => _authAndAction(() {
+               SettingsManager.classDeleteBiometric = SettingsManager.classDeleteBiometric == 'fingerprint' ? 'face' : 'fingerprint';
+            }),
           ),
-
           const Divider(height: 40),
+
           _buildSectionHeader("Batch Management"),
           ListTile(
             leading: const Icon(Icons.folder_delete, color: Colors.orange),
             title: const Text("Manage / Delete Batches"),
-            subtitle: const Text("View and remove batches securely"),
+            subtitle: const Text("Secure batch management zone"),
             trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () {},
+            onTap: () => _authAndAction(() {
+              Navigator.push(context, MaterialPageRoute(builder: (context) => const BatchManagementScreen()));
+            }),
           ),
         ],
       ),
     );
   }
-
   Widget _buildSectionHeader(String title) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
-      child: Text(title, style: const TextStyle(color: Color(0xFF005CFF), fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 1.2)),
+    return Padding(padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0), child: Text(title, style: const TextStyle(color: Color(0xFF005CFF), fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 1.2)));
+  }
+}
+
+// --- BATCH MANAGEMENT SCREEN (Inside Settings) ---
+class BatchManagementScreen extends StatefulWidget {
+  const BatchManagementScreen({super.key});
+  @override
+  State<BatchManagementScreen> createState() => _BatchManagementScreenState();
+}
+
+class _BatchManagementScreenState extends State<BatchManagementScreen> {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Batch Management"), backgroundColor: Colors.red.withOpacity(0.1)),
+      body: AppData.batches.isEmpty 
+        ? const Center(child: Text("No Batches Found."))
+        : ListView.builder(
+            itemCount: AppData.batches.length,
+            itemBuilder: (context, index) {
+              final batch = AppData.batches[index];
+              return Card(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: ListTile(
+                  title: Text(batch['batchName'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text("Total Classes: ${batch['totalClasses']}"),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: () async {
+                      // Require Auth before deleting batch
+                      bool isAuth = await SecurityGateway.verifySettingsModification(context);
+                      if (isAuth) {
+                        setState(() { AppData.batches.removeAt(index); });
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Batch Deleted Successfully')));
+                      }
+                    },
+                  ),
+                ),
+              );
+            },
+          ),
     );
   }
 }
@@ -481,37 +513,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
 // --- 4. DASHBOARD & OTHER SCREENS ---
 class DashboardScreen extends StatefulWidget {
-  final VoidCallback toggleTheme;
-  final bool isDarkMode;
+  final VoidCallback toggleTheme; final bool isDarkMode;
   const DashboardScreen({super.key, required this.toggleTheme, required this.isDarkMode});
-  @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  @override State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  List<Map<String, dynamic>> batches = [
-    {'batchName': '2027 A', 'currentSet': 'Set 03', 'progress': '5 / 8 Classes', 'completedSets': '2', 'totalClasses': '21', 'feeStatus': '⚠ Fee Reminder', 'isFeeReminder': true, 'classLimit': 8},
-    {'batchName': '2028 B', 'currentSet': 'Set 01', 'progress': '2 / 8 Classes', 'completedSets': '0', 'totalClasses': '2', 'feeStatus': '✓ Fee Collected', 'isFeeReminder': false, 'classLimit': 8}
-  ];
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text("Tutor's Desk", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5)),
         centerTitle: true, backgroundColor: Colors.transparent, elevation: 0,
-        actions: [
-          IconButton(icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode), onPressed: widget.toggleTheme),
-        ],
+        actions: [IconButton(icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode), onPressed: widget.toggleTheme)],
       ),
-      drawer: DeveloperProfileDrawer(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode),
-      body: batches.isEmpty 
+      drawer: DeveloperProfileDrawer(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode, onSettingsClosed: () => setState((){})), // refresh if batch deleted
+      body: AppData.batches.isEmpty 
         ? const Center(child: Text("No Batches Yet. Create your first batch!"))
         : ListView.builder(
             padding: const EdgeInsets.all(16.0),
-            itemCount: batches.length,
+            itemCount: AppData.batches.length,
             itemBuilder: (context, index) {
-              final batch = batches[index];
+              final batch = AppData.batches[index];
               return Padding(
                 padding: const EdgeInsets.only(bottom: 16.0),
                 child: BatchCard(
@@ -527,7 +550,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           final newBatch = await Navigator.push(context, MaterialPageRoute(builder: (context) => const CreateBatchScreen()));
           if (newBatch != null) {
             setState(() {
-              batches.add({
+              AppData.batches.add({
                 'batchName': newBatch['batchName'], 'currentSet': 'Set 01', 'progress': '0 / ${newBatch['classLimit']} Classes',
                 'completedSets': '0', 'totalClasses': '0', 'feeStatus': '✓ Fee Collected', 'isFeeReminder': false,
                 'classLimit': int.parse(newBatch['classLimit'].toString()),
@@ -542,13 +565,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 }
 
 class BatchCard extends StatelessWidget {
-  final String batchName, currentSet, progress, completedSets, totalClasses, feeStatus;
-  final bool isFeeReminder;
-  final int classLimit;
+  final String batchName, currentSet, progress, completedSets, totalClasses, feeStatus; final bool isFeeReminder; final int classLimit;
   const BatchCard({super.key, required this.batchName, required this.currentSet, required this.progress, required this.completedSets, required this.totalClasses, required this.feeStatus, required this.isFeeReminder, required this.classLimit});
-
-  @override
-  Widget build(BuildContext context) {
+  @override Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
     return Card(
       elevation: isDark ? 2 : 12, shadowColor: isDark ? Colors.black54 : Colors.black26, color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
@@ -561,22 +580,13 @@ class BatchCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(batchName, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)), const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey)]),
-              const Divider(height: 30),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildStatColumn('Current Set', currentSet, isDark), _buildStatColumn('Progress', progress, isDark)]),
-              const SizedBox(height: 20),
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildStatColumn('Completed Sets', completedSets, isDark), _buildStatColumn('Total Classes', totalClasses, isDark)]),
-              const SizedBox(height: 20),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(batchName, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)), const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey)]), const Divider(height: 30),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildStatColumn('Current Set', currentSet, isDark), _buildStatColumn('Progress', progress, isDark)]), const SizedBox(height: 20),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildStatColumn('Completed Sets', completedSets, isDark), _buildStatColumn('Total Classes', totalClasses, isDark)]), const SizedBox(height: 20),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(color: isFeeReminder ? (isDark ? Colors.red.shade900.withOpacity(0.3) : Colors.red.shade50) : (isDark ? Colors.green.shade900.withOpacity(0.3) : Colors.green.shade50), borderRadius: BorderRadius.circular(12), border: Border.all(color: isFeeReminder ? (isDark ? Colors.red.shade800 : Colors.red.shade100) : (isDark ? Colors.green.shade800 : Colors.green.shade100))),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(isFeeReminder ? Icons.warning_amber_rounded : Icons.check_circle, color: isFeeReminder ? (isDark ? Colors.red.shade300 : Colors.red) : (isDark ? Colors.green.shade300 : Colors.green), size: 20), const SizedBox(width: 8),
-                    Text(feeStatus, style: TextStyle(color: isFeeReminder ? (isDark ? Colors.red.shade200 : Colors.red.shade700) : (isDark ? Colors.green.shade200 : Colors.green.shade700), fontWeight: FontWeight.w600)),
-                  ],
-                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(isFeeReminder ? Icons.warning_amber_rounded : Icons.check_circle, color: isFeeReminder ? (isDark ? Colors.red.shade300 : Colors.red) : (isDark ? Colors.green.shade300 : Colors.green), size: 20), const SizedBox(width: 8), Text(feeStatus, style: TextStyle(color: isFeeReminder ? (isDark ? Colors.red.shade200 : Colors.red.shade700) : (isDark ? Colors.green.shade200 : Colors.green.shade700), fontWeight: FontWeight.w600))]),
               )
             ],
           ),
@@ -584,21 +594,19 @@ class BatchCard extends StatelessWidget {
       ),
     );
   }
-  Widget _buildStatColumn(String label, String value, bool isDark) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(label, style: TextStyle(color: isDark ? Colors.grey.shade400 : Colors.grey.shade600, fontSize: 12)), const SizedBox(height: 4), Text(value, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16))]);
-  }
+  Widget _buildStatColumn(String label, String value, bool isDark) { return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(label, style: TextStyle(color: isDark ? Colors.grey.shade400 : Colors.grey.shade600, fontSize: 12)), const SizedBox(height: 4), Text(value, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16))]); }
 }
 
 class BatchDetailsScreen extends StatefulWidget {
   final String batchName; final int classLimit;
   const BatchDetailsScreen({super.key, required this.batchName, required this.classLimit});
-  @override
-  State<BatchDetailsScreen> createState() => _BatchDetailsScreenState();
+  @override State<BatchDetailsScreen> createState() => _BatchDetailsScreenState();
 }
 class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   int currentSetNumber = 1, completedClasses = 0; bool isFeePaid = false; List<Map<String, String>> classHistory = [];
   bool get isFeeReminder => (widget.classLimit - completedClasses) <= 3 && completedClasses < widget.classLimit && !isFeePaid;
   String _getFormattedDate() { DateTime now = DateTime.now(); return '${now.day} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][now.month - 1]} ${now.year}'; }
+  
   void _showAddClassDialog() {
     if (completedClasses >= widget.classLimit) return; 
     TextEditingController subjectController = TextEditingController();
@@ -606,13 +614,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
       context: context, builder: (context) {
         return AlertDialog(
           title: const Text('Add New Class'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / ${widget.classLimit}', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 15), TextField(controller: subjectController, decoration: const InputDecoration(labelText: 'Subject / Description', border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))))),
-            ],
-          ),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / ${widget.classLimit}', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)), const SizedBox(height: 15), TextField(controller: subjectController, decoration: const InputDecoration(labelText: 'Subject / Description', border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))))) ]),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
             ElevatedButton(onPressed: () { if (subjectController.text.isNotEmpty) { Navigator.pop(context); setState(() { completedClasses++; classHistory.insert(0, {'date': _getFormattedDate(), 'subject': subjectController.text, 'classNum': '$completedClasses'}); }); if (completedClasses >= widget.classLimit) { Future.delayed(const Duration(milliseconds: 400), () { _showSetCompletedDialog(); }); } } }, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white), child: const Text('Save Class')),
@@ -624,31 +626,18 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   void _showSetCompletedDialog() {
     showDialog(
       context: context, barrierDismissible: false, 
-      builder: (context) => PopScope(
-        canPop: false, 
-        child: AlertDialog(
-          icon: const Icon(Icons.verified, color: Colors.green, size: 50), title: Text('Set $currentSetNumber Completed!'), content: const Text('The final class has been added. Generating the next set automatically.'),
-          actions: [ElevatedButton(onPressed: () { Navigator.pop(context); setState(() { currentSetNumber++; completedClasses = 0; classHistory.clear(); isFeePaid = false; }); }, style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white), child: const Text('Continue to Next Set'))],
-        ),
-      ),
+      builder: (context) => PopScope(canPop: false, child: AlertDialog(icon: const Icon(Icons.verified, color: Colors.green, size: 50), title: Text('Set $currentSetNumber Completed!'), content: const Text('Generating the next set automatically.'), actions: [ElevatedButton(onPressed: () { Navigator.pop(context); setState(() { currentSetNumber++; completedClasses = 0; classHistory.clear(); isFeePaid = false; }); }, style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white), child: const Text('Continue'))])),
     );
   }
-  @override
-  Widget build(BuildContext context) {
+  @override Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark; int remainingClasses = widget.classLimit - completedClasses;
     Color progressColor = completedClasses >= widget.classLimit ? Colors.green : (isFeeReminder ? Colors.orange : const Color(0xFF005CFF));
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.batchName, style: const TextStyle(fontWeight: FontWeight.bold)), centerTitle: true, backgroundColor: Colors.transparent, elevation: 0,
-      ),
+      appBar: AppBar(title: Text(widget.batchName, style: const TextStyle(fontWeight: FontWeight.bold)), centerTitle: true, backgroundColor: Colors.transparent, elevation: 0),
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
-          Card(
-            elevation: isDark ? 2 : 8, shadowColor: isDark ? Colors.black54 : Colors.black26, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-            child: Padding(padding: const EdgeInsets.all(24.0), child: Column(children: [const Text('CURRENT SET', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, letterSpacing: 1)), const SizedBox(height: 10), Text('Set ${currentSetNumber.toString().padLeft(2, '0')}', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)), const SizedBox(height: 20), LinearProgressIndicator(value: completedClasses / widget.classLimit, minHeight: 12, borderRadius: BorderRadius.circular(6), backgroundColor: isDark ? Colors.grey.shade800 : Colors.grey.shade200, color: progressColor), const SizedBox(height: 10), Text('$completedClasses / ${widget.classLimit} Classes ($remainingClasses Classes Remaining)', style: const TextStyle(fontWeight: FontWeight.w500))])),
-          ),
-          const SizedBox(height: 20),
+          Card(elevation: isDark ? 2 : 8, shadowColor: isDark ? Colors.black54 : Colors.black26, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)), child: Padding(padding: const EdgeInsets.all(24.0), child: Column(children: [const Text('CURRENT SET', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, letterSpacing: 1)), const SizedBox(height: 10), Text('Set ${currentSetNumber.toString().padLeft(2, '0')}', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)), const SizedBox(height: 20), LinearProgressIndicator(value: completedClasses / widget.classLimit, minHeight: 12, borderRadius: BorderRadius.circular(6), backgroundColor: isDark ? Colors.grey.shade800 : Colors.grey.shade200, color: progressColor), const SizedBox(height: 10), Text('$completedClasses / ${widget.classLimit} Classes ($remainingClasses Classes Remaining)', style: const TextStyle(fontWeight: FontWeight.w500))]))), const SizedBox(height: 20),
           if (isFeeReminder) Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: isDark ? Colors.orange.shade900.withOpacity(0.3) : Colors.orange.shade50, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.orange.shade200)), child: Column(children: [Row(children: [const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 30), const SizedBox(width: 16), Expanded(child: Text('⚠ FEE REMINDER\n$remainingClasses classes remaining. Remember to collect the class fee.', style: TextStyle(color: Colors.orange.shade800, fontWeight: FontWeight.bold)))]), const SizedBox(height: 12), SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: const Icon(Icons.check_circle_outline), label: const Text('Mark Fee as Collected'), style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white), onPressed: () { setState(() { isFeePaid = true; }); }))]))
           else if (isFeePaid) Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: isDark ? Colors.green.shade900.withOpacity(0.3) : Colors.green.shade50, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.green.shade200)), child: const Row(children: [Icon(Icons.verified, color: Colors.green, size: 30), SizedBox(width: 16), Text('✓ FEE COLLECTED', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 16))])),
           const SizedBox(height: 20), const Text('Recent Classes (Swipe left to delete)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)), const SizedBox(height: 10),
@@ -658,6 +647,14 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
             return Dismissible(
               key: UniqueKey(), direction: DismissDirection.endToStart,
               background: Container(margin: const EdgeInsets.symmetric(vertical: 4), decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12)), alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete_sweep, color: Colors.white, size: 30)),
+              
+              // ----------------------------------------------------
+              // CLASS DELETION SECURITY LOGIC (PIN + BIOMETRIC)
+              // ----------------------------------------------------
+              confirmDismiss: (direction) async {
+                 return await SecurityGateway.verifyClassDeletion(context);
+              },
+              
               onDismissed: (direction) { setState(() { classHistory.removeAt(index); completedClasses--; }); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Class removed.'))); },
               child: Card(elevation: 0, margin: const EdgeInsets.symmetric(vertical: 4), color: isDark ? const Color(0xFF1E1E1E) : Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: isDark ? Colors.grey.shade800 : Colors.grey.shade300)), child: ListTile(leading: CircleAvatar(backgroundColor: Colors.blue.withOpacity(0.1), child: const Icon(Icons.menu_book, color: Colors.blue)), title: Text(cls['subject']!, style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Class ${cls['classNum']} • ${cls['date']}'))),
             );
@@ -682,17 +679,10 @@ class _CreateBatchScreenState extends State<CreateBatchScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TextFormField(controller: nameController, decoration: InputDecoration(labelText: 'Batch Name (e.g. 2027 A)', border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)), filled: true, fillColor: isDark ? const Color(0xFF1E1E1E) : Colors.white)), const SizedBox(height: 20),
-            TextFormField(controller: descController, maxLines: 3, decoration: InputDecoration(labelText: 'Batch Description (Optional)', border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)), filled: true, fillColor: isDark ? const Color(0xFF1E1E1E) : Colors.white)), const SizedBox(height: 20),
-            TextFormField(controller: limitController, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: 'Set Class Limit', suffixText: 'Classes', border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)), filled: true, fillColor: isDark ? const Color(0xFF1E1E1E) : Colors.white)), const SizedBox(height: 40),
-            SizedBox(
-              width: double.infinity, height: 55,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
-                onPressed: () { if(nameController.text.isNotEmpty) { Navigator.pop(context, {'batchName': nameController.text, 'classLimit': limitController.text}); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Batch Created Successfully!'))); } },
-                child: const Text('Create Batch', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              ),
-            ),
+            TextFormField(controller: nameController, decoration: InputDecoration(labelText: 'Batch Name', border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)), filled: true, fillColor: isDark ? const Color(0xFF1E1E1E) : Colors.white)), const SizedBox(height: 20),
+            TextFormField(controller: descController, maxLines: 3, decoration: InputDecoration(labelText: 'Description', border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)), filled: true, fillColor: isDark ? const Color(0xFF1E1E1E) : Colors.white)), const SizedBox(height: 20),
+            TextFormField(controller: limitController, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: 'Class Limit', border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)), filled: true, fillColor: isDark ? const Color(0xFF1E1E1E) : Colors.white)), const SizedBox(height: 40),
+            SizedBox(width: double.infinity, height: 55, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(nameController.text.isNotEmpty) { Navigator.pop(context, {'batchName': nameController.text, 'classLimit': limitController.text}); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Batch Created Successfully!'))); } }, child: const Text('Create Batch', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)))),
           ],
         ),
       ),
@@ -701,17 +691,10 @@ class _CreateBatchScreenState extends State<CreateBatchScreen> {
 }
 
 class DeveloperProfileDrawer extends StatelessWidget {
-  final VoidCallback toggleTheme;
-  final bool isDarkMode;
-  const DeveloperProfileDrawer({super.key, required this.toggleTheme, required this.isDarkMode});
+  final VoidCallback toggleTheme; final bool isDarkMode; final VoidCallback onSettingsClosed;
+  const DeveloperProfileDrawer({super.key, required this.toggleTheme, required this.isDarkMode, required this.onSettingsClosed});
 
-  Future<void> _launchURL(String urlString) async { 
-    final Uri url = Uri.parse(urlString); // FIXED HERE
-    if (!await launchUrl(url, mode: LaunchMode.externalApplication)) { 
-      debugPrint('Could not launch $url'); 
-    } 
-  }
-  
+  Future<void> _launchURL(String urlString) async { if (!await launchUrl(Uri.parse(urlString), mode: LaunchMode.externalApplication)) debugPrint('Could not launch'); }
   void _showProfileImage(BuildContext context) { showDialog(context: context, builder: (context) => Dialog(backgroundColor: Colors.transparent, child: InteractiveViewer(panEnabled: true, minScale: 0.5, maxScale: 4.0, child: ClipRRect(borderRadius: BorderRadius.circular(20), child: Image.asset('profile.jpg'))))); }
 
   @override Widget build(BuildContext context) {
@@ -727,19 +710,18 @@ class DeveloperProfileDrawer extends StatelessWidget {
             currentAccountPicture: GestureDetector(onTap: () => _showProfileImage(context), child: const Hero(tag: 'profilePic', child: CircleAvatar(backgroundColor: Colors.white, backgroundImage: AssetImage('profile.jpg')))),
           ),
           ListTile(
-            leading: const Icon(Icons.settings, color: Colors.blue), 
-            title: const Text('Security & Settings', style: TextStyle(fontWeight: FontWeight.bold)), 
-            trailing: const Icon(Icons.lock, size: 16, color: Colors.red), 
-            onTap: () {
+            leading: const Icon(Icons.settings, color: Colors.blue), title: const Text('Security & Settings', style: TextStyle(fontWeight: FontWeight.bold)), trailing: const Icon(Icons.lock, size: 16, color: Colors.red), 
+            onTap: () async {
               Navigator.pop(context); 
-              AdminGateway.openSettings(context, toggleTheme, isDarkMode); 
+              AdminGateway.openSettings(context, toggleTheme, isDarkMode);
+              // Wait for settings to close, then refresh dashboard in case batch was deleted
+              await Future.delayed(const Duration(seconds: 1));
+              onSettingsClosed();
             }
           ),
-          const Divider(),
-          const Padding(padding: EdgeInsets.only(left: 16, top: 8, bottom: 8), child: Align(alignment: Alignment.centerLeft, child: Text('Social Media', style: TextStyle(color: Colors.grey)))),
+          const Divider(), const Padding(padding: EdgeInsets.only(left: 16, top: 8, bottom: 8), child: Align(alignment: Alignment.centerLeft, child: Text('Social Media', style: TextStyle(color: Colors.grey)))),
           ListTile(leading: const Icon(Icons.chat, color: Colors.green), title: const Text('WhatsApp'), subtitle: const Text('+94 75 169 6798'), onTap: () => _launchURL('https://wa.me/94751696798')),
           ListTile(leading: const Icon(Icons.camera_alt, color: Colors.pinkAccent), title: const Text('Instagram'), subtitle: const Text('jilaksan_k'), onTap: () => _launchURL('https://www.instagram.com/jilaksan_k?igsi=bWJocGkxNWY5MG5y')),
-          ListTile(leading: const Icon(Icons.facebook, color: Colors.blue), title: const Text('Facebook'), subtitle: const Text('Kanthasamy Jilaksan'), onTap: () => _launchURL('https://www.facebook.com/share/1EZxroSv9E/')),
         ],
       ),
     );
