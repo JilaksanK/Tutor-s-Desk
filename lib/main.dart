@@ -4,8 +4,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:local_auth/local_auth.dart';
 
 bool _isFirstTimeDrawerOpened = true;
-bool _isLockScreenVisible = false; // Lock Screen திரையில் உள்ளதா என அறிய
-final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>(); // Global Navigator
+bool _isLockScreenVisible = false; 
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>(); 
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,15 +20,14 @@ class TutorsDeskApp extends StatefulWidget {
   State<TutorsDeskApp> createState() => _TutorsDeskAppState();
 }
 
-// App Lifecycle Observer சேர்க்கப்பட்டுள்ளது (Background Lock-க்காக)
 class _TutorsDeskAppState extends State<TutorsDeskApp> with WidgetsBindingObserver {
   ThemeMode _themeMode = ThemeMode.light;
-  bool _requiresAuth = false; // App minimize ஆகும்போது இது true ஆகும்
+  bool _requiresAuth = false; 
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this); // Observer-ஐ தொடங்குகிறோம்
+    WidgetsBinding.instance.addObserver(this); 
   }
 
   @override
@@ -37,20 +36,18 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> with WidgetsBindingObserv
     super.dispose();
   }
 
-  // App-ஐ விட்டு வெளியே போகும்போதும், உள்ளே வரும்போதும் நடக்கும் மேஜிக்!
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      _requiresAuth = true; // App-ஐ விட்டு வெளியே போனால் லாக் தேவை
+      _requiresAuth = true; 
     } else if (state == AppLifecycleState.resumed) {
-      // App-க்கு மீண்டும் வரும்போது லாக் ஸ்கிரீன் இல்லையென்றால், உடனடியாக லாக் ஸ்கிரீனைக் காட்டுகிறோம்
       if (_requiresAuth && !_isLockScreenVisible) {
         navigatorKey.currentState?.push(
           MaterialPageRoute(
             builder: (context) => AppLockScreen(
               toggleTheme: toggleTheme,
               isDarkMode: _themeMode == ThemeMode.dark,
-              isFromResume: true, // Resume-ல் இருந்து வருவதை உணர்த்துகிறோம்
+              isFromResume: true, 
             ),
           ),
         );
@@ -68,7 +65,7 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> with WidgetsBindingObserv
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      navigatorKey: navigatorKey, // Global Key இணைக்கப்பட்டுள்ளது
+      navigatorKey: navigatorKey, 
       title: "Tutor's Desk",
       debugShowCheckedModeBanner: false,
       themeMode: _themeMode,
@@ -89,7 +86,7 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> with WidgetsBindingObserv
   }
 }
 
-// --- 1. SPLASH SCREEN (With New Logo & Developer Profile) ---
+// --- 1. SPLASH SCREEN (With Original Shape Logo) ---
 class SplashScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
   final bool isDarkMode;
@@ -135,19 +132,18 @@ class _SplashScreenState extends State<SplashScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Spacer(),
-            // Nammada Logo Section
+            // லோகோ அதன் ஒரிஜினல் வடிவத்தில் (Gap இல்லாமல்)
             Container(
-              padding: const EdgeInsets.all(4),
               decoration: BoxDecoration(
-                color: Colors.white,
-                shape: BoxShape.circle,
+                borderRadius: BorderRadius.circular(20), // Premium Rounded edges
                 boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 15, offset: const Offset(0, 5))],
               ),
-              child: ClipOval(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(20),
                 child: Image.asset(
                   'app_icon.png', 
-                  width: 100, height: 100, fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) => const Icon(Icons.school, size: 80, color: Color(0xFF005CFF)),
+                  width: 100, height: 100, fit: BoxFit.contain,
+                  errorBuilder: (context, error, stackTrace) => const Icon(Icons.school, size: 80, color: Colors.white),
                 ),
               ),
             ),
@@ -158,7 +154,6 @@ class _SplashScreenState extends State<SplashScreen> {
             const SizedBox(height: 40),
             const CircularProgressIndicator(color: Colors.white),
             const Spacer(),
-            // Developer Profile at Splash
             const Text("Developed By", style: TextStyle(color: Colors.white70, fontSize: 12)),
             const SizedBox(height: 4),
             const Text("Jilaksan_K", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
@@ -176,7 +171,7 @@ class _SplashScreenState extends State<SplashScreen> {
 class AppLockScreen extends StatefulWidget {
   final VoidCallback toggleTheme;
   final bool isDarkMode;
-  final bool isFromResume; // App-ஐ minimize செய்து வந்தால் இது True ஆக இருக்கும்
+  final bool isFromResume; 
 
   const AppLockScreen({
     super.key, 
@@ -196,13 +191,13 @@ class _AppLockScreenState extends State<AppLockScreen> {
   @override
   void initState() {
     super.initState();
-    _isLockScreenVisible = true; // Lock Screen ஓபன் ஆகிவிட்டது
+    _isLockScreenVisible = true; 
     _authenticate();
   }
 
   @override
   void dispose() {
-    _isLockScreenVisible = false; // Lock Screen க்ளோஸ் ஆகிவிட்டது
+    _isLockScreenVisible = false; 
     super.dispose();
   }
 
@@ -216,7 +211,7 @@ class _AppLockScreenState extends State<AppLockScreen> {
       if (canCheckBiometrics || isSupported) {
         authenticated = await auth.authenticate(
           localizedReason: 'Authenticate to continue to Tutor\'s Desk',
-          options: const AuthenticationOptions(stickyAuth: true, biometricOnly: false), // biometricOnly false என்றால் PIN கேட்கும்
+          options: const AuthenticationOptions(stickyAuth: true, biometricOnly: false),
         );
       } else {
         authenticated = true; 
@@ -230,10 +225,8 @@ class _AppLockScreenState extends State<AppLockScreen> {
 
     if (authenticated && mounted) {
       if (widget.isFromResume) {
-        // Resume-ல் இருந்து வந்தால், Lock Screen-ஐ மட்டும் Pop செய்கிறோம் (பழைய இடத்திற்கே செல்லும்)
         Navigator.pop(context);
       } else {
-        // முதலில் ஆப் ஓபன் ஆகும் போது Dashboard-க்கு செல்கிறோம்
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode)),
@@ -253,7 +246,6 @@ class _AppLockScreenState extends State<AppLockScreen> {
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
     
-    // PopScope: Lock Screen-ல் இருக்கும்போது Back Button-ஐ அழுத்தினால் ஆப்பிற்குள் செல்லாமல் தடுக்கும் பாதுகாப்பு!
     return PopScope(
       canPop: false, 
       child: Scaffold(
