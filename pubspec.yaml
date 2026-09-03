@@ -13,6 +13,8 @@ dependencies:
   url_launcher: ^6.3.0
   local_auth: ^2.1.8
   shared_preferences: ^2.2.2
+  sqflite: ^2.3.0
+  path: ^1.8.3
 
 dev_dependencies:
   flutter_test:
