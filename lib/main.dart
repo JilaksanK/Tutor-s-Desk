@@ -3,17 +3,74 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart';
 
 bool _isFirstTimeDrawerOpened = true;
 bool _isLockScreenVisible = false; 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>(); 
 
+// --- DATABASE HELPER ---
+class DatabaseHelper {
+  static final DatabaseHelper instance = DatabaseHelper._init();
+  static Database? _database;
+
+  DatabaseHelper._init();
+
+  Future<Database> get database async {
+    if (_database != null) return _database!;
+    _database = await _initDB('tutors_desk.db');
+    return _database!;
+  }
+
+  Future<Database> _initDB(String filePath) async {
+    final dbPath = await getDatabasesPath();
+    final path = join(dbPath, filePath);
+    return await openDatabase(path, version: 1, onCreate: _createDB);
+  }
+
+  Future _createDB(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batchName TEXT NOT NULL,
+        currentSet TEXT NOT NULL,
+        progress TEXT NOT NULL,
+        completedSets TEXT NOT NULL,
+        totalClasses TEXT NOT NULL,
+        feeStatus TEXT NOT NULL,
+        isFeeReminder INTEGER NOT NULL,
+        classLimit INTEGER NOT NULL
+      )
+    ''');
+  }
+
+  Future<int> insertBatch(Map<String, dynamic> batch) async {
+    final db = await instance.database;
+    Map<String, dynamic> dbBatch = Map.from(batch);
+    dbBatch['isFeeReminder'] = dbBatch['isFeeReminder'] == true ? 1 : 0;
+    return await db.insert('batches', dbBatch);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchAllBatches() async {
+    final db = await instance.database;
+    final result = await db.query('batches');
+    return result.map((e) {
+      var map = Map<String, dynamic>.from(e);
+      map['isFeeReminder'] = map['isFeeReminder'] == 1;
+      return map;
+    }).toList();
+  }
+
+  Future<int> deleteBatch(int id) async {
+    final db = await instance.database;
+    return await db.delete('batches', where: 'id = ?', whereArgs: [id]);
+  }
+}
+
 // --- GLOBAL APP DATA ---
 class AppData {
-  static List<Map<String, dynamic>> batches = [
-    {'batchName': '2027 A', 'currentSet': 'Set 03', 'progress': '5 / 8 Classes', 'completedSets': '2', 'totalClasses': '21', 'feeStatus': '⚠ Fee Reminder', 'isFeeReminder': true, 'classLimit': 8},
-    {'batchName': '2028 B', 'currentSet': 'Set 01', 'progress': '2 / 8 Classes', 'completedSets': '0', 'totalClasses': '2', 'feeStatus': '✓ Fee Collected', 'isFeeReminder': false, 'classLimit': 8}
-  ];
+  static List<Map<String, dynamic>> batches = [];
 }
 
 // --- SECURITY & SETTINGS MANAGER ---
@@ -24,7 +81,6 @@ class SettingsManager {
     prefs = await SharedPreferences.getInstance();
   }
 
-  // App Lock Settings
   static bool get isAppLockEnabled => prefs.getBool('app_lock_enabled') ?? false;
   static set isAppLockEnabled(bool val) => prefs.setBool('app_lock_enabled', val);
 
@@ -40,7 +96,6 @@ class SettingsManager {
   static String? get appPin => prefs.getString('app_pin');
   static set appPin(String? val) => val == null ? prefs.remove('app_pin') : prefs.setString('app_pin', val);
 
-  // Admin / Class Deletion Security
   static String? get adminPin => prefs.getString('admin_pin');
   static set adminPin(String? val) => val == null ? prefs.remove('admin_pin') : prefs.setString('admin_pin', val);
 
@@ -125,7 +180,12 @@ class SecurityGateway {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  
   await SettingsManager.init(); 
+  
+  // Database la irunthu data edukkurom
+  AppData.batches = await DatabaseHelper.instance.fetchAllBatches();
+  
   runApp(const TutorsDeskApp());
 }
 
@@ -239,7 +299,6 @@ class _AppLockScreenState extends State<AppLockScreen> {
     super.initState();
     _isLockScreenVisible = true; 
     
-    // Auto-prompt biometrics if enabled. If only PIN is enabled, show PIN dialog automatically.
     if (SettingsManager.useAppFace || SettingsManager.useAppFingerprint) {
       _authenticate();
     } else if (SettingsManager.useAppPin && SettingsManager.appPin != null) {
@@ -288,7 +347,6 @@ class _AppLockScreenState extends State<AppLockScreen> {
   @override
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
-    
     bool onlyFace = SettingsManager.useAppFace && !SettingsManager.useAppFingerprint;
     IconData authIcon = onlyFace ? Icons.face : Icons.fingerprint;
     String authLabel = onlyFace ? 'Use Face Recognition' : 'Use Biometrics';
@@ -392,49 +450,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   
   Future<void> _authAndAction(Function action) async {
     bool isAuth = await SecurityGateway.verifySettingsModification(context);
-    if (isAuth) {
-      action();
-      setState(() {});
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authentication failed!'), backgroundColor: Colors.red));
-    }
+    if (isAuth) { action(); setState(() {}); } 
+    else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authentication failed!'), backgroundColor: Colors.red)); }
   }
 
   void _showAndroidBiometricNotice() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Android Security Notice"),
-        content: const Text("Android OS automatically uses your phone's default primary biometric (usually Fingerprint). Even if you select Face Lock here, your phone might still prompt for Fingerprint first depending on your device settings. \n\nIf the selected method doesn't appear, Sorry! This is controlled by Google's Android system."),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("I Understand"))],
-      )
-    );
+    showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Android Security Notice"), content: const Text("Android OS automatically uses your phone's default primary biometric (usually Fingerprint). Even if you select Face Lock here, your phone might still prompt for Fingerprint first depending on your device settings."), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("I Understand"))]));
   }
 
   void _showSetAppPinDialog() {
     TextEditingController pinCtrl = TextEditingController();
     showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Set App PIN"),
-        content: TextField(
-          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true,
-          decoration: const InputDecoration(labelText: 'Enter 4-digit App PIN', border: OutlineInputBorder()),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-          ElevatedButton(
-            onPressed: () {
-              if (pinCtrl.text.length == 4) {
-                SettingsManager.appPin = pinCtrl.text;
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('App PIN Updated!')));
-                setState(() {});
-              }
-            },
-            child: const Text("Save PIN"),
-          )
-        ]
+      context: context, builder: (context) => AlertDialog(
+        title: const Text("Set App PIN"), content: TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true, decoration: const InputDecoration(labelText: 'Enter 4-digit App PIN', border: OutlineInputBorder())),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")), ElevatedButton(onPressed: () { if (pinCtrl.text.length == 4) { SettingsManager.appPin = pinCtrl.text; Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('App PIN Updated!'))); setState(() {}); } }, child: const Text("Save PIN"))]
       )
     );
   }
@@ -447,90 +476,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           _buildSectionHeader("Settings Security"),
-          ListTile(
-            title: const Text("Settings Modification Auth"),
-            subtitle: Text("Currently: ${SettingsManager.settingsBiometric.toUpperCase()}"),
-            trailing: const Icon(Icons.shield, color: Colors.blue),
-            onTap: () => _authAndAction(() {
-              SettingsManager.settingsBiometric = SettingsManager.settingsBiometric == 'fingerprint' ? 'face' : 'fingerprint';
-              _showAndroidBiometricNotice();
-            }),
-          ),
+          ListTile(title: const Text("Settings Modification Auth"), subtitle: Text("Currently: ${SettingsManager.settingsBiometric.toUpperCase()}"), trailing: const Icon(Icons.shield, color: Colors.blue), onTap: () => _authAndAction(() { SettingsManager.settingsBiometric = SettingsManager.settingsBiometric == 'fingerprint' ? 'face' : 'fingerprint'; _showAndroidBiometricNotice(); })),
           const Divider(height: 40),
-
           _buildSectionHeader("App Opening Lock"),
-          SwitchListTile(
-            title: const Text("Enable App Lock", style: TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: const Text("Require auth when opening app"),
-            value: SettingsManager.isAppLockEnabled,
-            activeColor: const Color(0xFF005CFF),
-            onChanged: (val) => _authAndAction(() { SettingsManager.isAppLockEnabled = val; }),
-          ),
+          SwitchListTile(title: const Text("Enable App Lock", style: TextStyle(fontWeight: FontWeight.bold)), subtitle: const Text("Require auth when opening app"), value: SettingsManager.isAppLockEnabled, activeColor: const Color(0xFF005CFF), onChanged: (val) => _authAndAction(() { SettingsManager.isAppLockEnabled = val; })),
           if (SettingsManager.isAppLockEnabled) ...[
-            CheckboxListTile(title: const Text("Fingerprint"), value: SettingsManager.useAppFingerprint, onChanged: (val) => _authAndAction(() {
-              SettingsManager.useAppFingerprint = val!;
-              if(val) _showAndroidBiometricNotice();
-            })),
-            CheckboxListTile(title: const Text("Face Recognition"), value: SettingsManager.useAppFace, onChanged: (val) => _authAndAction(() {
-              SettingsManager.useAppFace = val!;
-              if(val) _showAndroidBiometricNotice();
-            })),
-            CheckboxListTile(title: const Text("PIN / Password"), value: SettingsManager.useAppPin, onChanged: (val) => _authAndAction(() {
-              SettingsManager.useAppPin = val!;
-              if (val == true && SettingsManager.appPin == null) {
-                _showSetAppPinDialog();
-              }
-            })),
-            // App PIN Change Option
-            if (SettingsManager.useAppPin)
-              ListTile(
-                title: const Text("Change App PIN"),
-                subtitle: const Text("Set a custom PIN to unlock the app"),
-                trailing: const Icon(Icons.pin),
-                onTap: () => _authAndAction(() {
-                  _showSetAppPinDialog();
-                }),
-              ),
+            CheckboxListTile(title: const Text("Fingerprint"), value: SettingsManager.useAppFingerprint, onChanged: (val) => _authAndAction(() { SettingsManager.useAppFingerprint = val!; if(val) _showAndroidBiometricNotice(); })),
+            CheckboxListTile(title: const Text("Face Recognition"), value: SettingsManager.useAppFace, onChanged: (val) => _authAndAction(() { SettingsManager.useAppFace = val!; if(val) _showAndroidBiometricNotice(); })),
+            CheckboxListTile(title: const Text("PIN / Password"), value: SettingsManager.useAppPin, onChanged: (val) => _authAndAction(() { SettingsManager.useAppPin = val!; if (val == true && SettingsManager.appPin == null) { _showSetAppPinDialog(); } })),
+            if (SettingsManager.useAppPin) ListTile(title: const Text("Change App PIN"), subtitle: const Text("Set a custom PIN to unlock the app"), trailing: const Icon(Icons.pin), onTap: () => _authAndAction(() { _showSetAppPinDialog(); })),
           ],
           const Divider(height: 40),
-
           _buildSectionHeader("Class Deletion Security"),
           const ListTile(title: Text("Admin PIN"), subtitle: Text("Compulsory for class deletion"), trailing: Icon(Icons.lock, color: Colors.red)),
-          ListTile(
-            title: const Text("Secondary Authentication"),
-            subtitle: Text("Currently: ${SettingsManager.classDeleteBiometric.toUpperCase()}"),
-            trailing: const Icon(Icons.edit),
-            onTap: () => _authAndAction(() {
-               SettingsManager.classDeleteBiometric = SettingsManager.classDeleteBiometric == 'fingerprint' ? 'face' : 'fingerprint';
-               _showAndroidBiometricNotice();
-            }),
-          ),
+          ListTile(title: const Text("Secondary Authentication"), subtitle: Text("Currently: ${SettingsManager.classDeleteBiometric.toUpperCase()}"), trailing: const Icon(Icons.edit), onTap: () => _authAndAction(() { SettingsManager.classDeleteBiometric = SettingsManager.classDeleteBiometric == 'fingerprint' ? 'face' : 'fingerprint'; _showAndroidBiometricNotice(); })),
           const Divider(height: 40),
-
           _buildSectionHeader("Batch Management"),
-          ListTile(
-            leading: const Icon(Icons.folder_delete, color: Colors.orange),
-            title: const Text("Manage / Delete Batches"),
-            subtitle: const Text("Secure batch management zone"),
-            trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () => _authAndAction(() {
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const BatchManagementScreen()));
-            }),
-          ),
+          ListTile(leading: const Icon(Icons.folder_delete, color: Colors.orange), title: const Text("Manage / Delete Batches"), subtitle: const Text("Secure batch management zone"), trailing: const Icon(Icons.arrow_forward_ios, size: 16), onTap: () => _authAndAction(() { Navigator.push(context, MaterialPageRoute(builder: (context) => const BatchManagementScreen())); })),
         ],
       ),
     );
   }
-  Widget _buildSectionHeader(String title) {
-    return Padding(padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0), child: Text(title, style: const TextStyle(color: Color(0xFF005CFF), fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 1.2)));
-  }
+  Widget _buildSectionHeader(String title) { return Padding(padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0), child: Text(title, style: const TextStyle(color: Color(0xFF005CFF), fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 1.2))); }
 }
 
 // --- BATCH MANAGEMENT SCREEN ---
 class BatchManagementScreen extends StatefulWidget {
   const BatchManagementScreen({super.key});
-  @override
-  State<BatchManagementScreen> createState() => _BatchManagementScreenState();
+  @override State<BatchManagementScreen> createState() => _BatchManagementScreenState();
 }
 
 class _BatchManagementScreenState extends State<BatchManagementScreen> {
@@ -554,6 +527,10 @@ class _BatchManagementScreenState extends State<BatchManagementScreen> {
                     onPressed: () async {
                       bool isAuth = await SecurityGateway.verifySettingsModification(context);
                       if (isAuth) {
+                        // Delete from database
+                        if(batch['id'] != null){
+                          await DatabaseHelper.instance.deleteBatch(batch['id']);
+                        }
                         setState(() { AppData.batches.removeAt(index); });
                         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Batch Deleted Successfully')));
                       }
@@ -605,13 +582,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
         onPressed: () async {
           final newBatch = await Navigator.push(context, MaterialPageRoute(builder: (context) => const CreateBatchScreen()));
           if (newBatch != null) {
-            setState(() {
-              AppData.batches.add({
-                'batchName': newBatch['batchName'], 'currentSet': 'Set 01', 'progress': '0 / ${newBatch['classLimit']} Classes',
-                'completedSets': '0', 'totalClasses': '0', 'feeStatus': '✓ Fee Collected', 'isFeeReminder': false,
-                'classLimit': int.parse(newBatch['classLimit'].toString()),
-              });
-            });
+            Map<String, dynamic> batchData = {
+              'batchName': newBatch['batchName'],
+              'currentSet': 'Set 01',
+              'progress': '0 / ${newBatch['classLimit']} Classes',
+              'completedSets': '0',
+              'totalClasses': '0',
+              'feeStatus': '✓ Fee Collected',
+              'isFeeReminder': false,
+              'classLimit': int.parse(newBatch['classLimit'].toString()),
+            };
+            
+            // Database-la pudhu batch-ah save panni, athoda ID-ya vangurom
+            int id = await DatabaseHelper.instance.insertBatch(batchData);
+            batchData['id'] = id;
+
+            setState(() { AppData.batches.add(batchData); });
           }
         },
         icon: const Icon(Icons.add), label: const Text('Create Batch', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -639,11 +625,7 @@ class BatchCard extends StatelessWidget {
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(batchName, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)), const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey)]), const Divider(height: 30),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildStatColumn('Current Set', currentSet, isDark), _buildStatColumn('Progress', progress, isDark)]), const SizedBox(height: 20),
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildStatColumn('Completed Sets', completedSets, isDark), _buildStatColumn('Total Classes', totalClasses, isDark)]), const SizedBox(height: 20),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(color: isFeeReminder ? (isDark ? Colors.red.shade900.withOpacity(0.3) : Colors.red.shade50) : (isDark ? Colors.green.shade900.withOpacity(0.3) : Colors.green.shade50), borderRadius: BorderRadius.circular(12), border: Border.all(color: isFeeReminder ? (isDark ? Colors.red.shade800 : Colors.red.shade100) : (isDark ? Colors.green.shade800 : Colors.green.shade100))),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(isFeeReminder ? Icons.warning_amber_rounded : Icons.check_circle, color: isFeeReminder ? (isDark ? Colors.red.shade300 : Colors.red) : (isDark ? Colors.green.shade300 : Colors.green), size: 20), const SizedBox(width: 8), Text(feeStatus, style: TextStyle(color: isFeeReminder ? (isDark ? Colors.red.shade200 : Colors.red.shade700) : (isDark ? Colors.green.shade200 : Colors.green.shade700), fontWeight: FontWeight.w600))]),
-              )
+              Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), decoration: BoxDecoration(color: isFeeReminder ? (isDark ? Colors.red.shade900.withOpacity(0.3) : Colors.red.shade50) : (isDark ? Colors.green.shade900.withOpacity(0.3) : Colors.green.shade50), borderRadius: BorderRadius.circular(12), border: Border.all(color: isFeeReminder ? (isDark ? Colors.red.shade800 : Colors.red.shade100) : (isDark ? Colors.green.shade800 : Colors.green.shade100))), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(isFeeReminder ? Icons.warning_amber_rounded : Icons.check_circle, color: isFeeReminder ? (isDark ? Colors.red.shade300 : Colors.red) : (isDark ? Colors.green.shade300 : Colors.green), size: 20), const SizedBox(width: 8), Text(feeStatus, style: TextStyle(color: isFeeReminder ? (isDark ? Colors.red.shade200 : Colors.red.shade700) : (isDark ? Colors.green.shade200 : Colors.green.shade700), fontWeight: FontWeight.w600))]))
             ],
           ),
         ),
@@ -666,8 +648,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   void _showAddClassDialog() {
     if (completedClasses >= widget.classLimit) return; 
     TextEditingController subjectController = TextEditingController();
-    showDialog(
-      context: context, builder: (context) {
+    showDialog(context: context, builder: (context) {
         return AlertDialog(
           title: const Text('Add New Class'),
           content: Column(mainAxisSize: MainAxisSize.min, children: [Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / ${widget.classLimit}', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)), const SizedBox(height: 15), TextField(controller: subjectController, decoration: const InputDecoration(labelText: 'Subject / Description', border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12))))) ]),
@@ -679,12 +660,8 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
       },
     );
   }
-  void _showSetCompletedDialog() {
-    showDialog(
-      context: context, barrierDismissible: false, 
-      builder: (context) => PopScope(canPop: false, child: AlertDialog(icon: const Icon(Icons.verified, color: Colors.green, size: 50), title: Text('Set $currentSetNumber Completed!'), content: const Text('Generating the next set automatically.'), actions: [ElevatedButton(onPressed: () { Navigator.pop(context); setState(() { currentSetNumber++; completedClasses = 0; classHistory.clear(); isFeePaid = false; }); }, style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white), child: const Text('Continue'))])),
-    );
-  }
+  void _showSetCompletedDialog() { showDialog(context: context, barrierDismissible: false, builder: (context) => PopScope(canPop: false, child: AlertDialog(icon: const Icon(Icons.verified, color: Colors.green, size: 50), title: Text('Set $currentSetNumber Completed!'), content: const Text('Generating the next set automatically.'), actions: [ElevatedButton(onPressed: () { Navigator.pop(context); setState(() { currentSetNumber++; completedClasses = 0; classHistory.clear(); isFeePaid = false; }); }, style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white), child: const Text('Continue'))]))); }
+  
   @override Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark; int remainingClasses = widget.classLimit - completedClasses;
     Color progressColor = completedClasses >= widget.classLimit ? Colors.green : (isFeeReminder ? Colors.orange : const Color(0xFF005CFF));
@@ -703,9 +680,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
             return Dismissible(
               key: UniqueKey(), direction: DismissDirection.endToStart,
               background: Container(margin: const EdgeInsets.symmetric(vertical: 4), decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12)), alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete_sweep, color: Colors.white, size: 30)),
-              
               confirmDismiss: (direction) async { return await SecurityGateway.verifyClassDeletion(context); },
-              
               onDismissed: (direction) { setState(() { classHistory.removeAt(index); completedClasses--; }); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Class removed.'))); },
               child: Card(elevation: 0, margin: const EdgeInsets.symmetric(vertical: 4), color: isDark ? const Color(0xFF1E1E1E) : Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: isDark ? Colors.grey.shade800 : Colors.grey.shade300)), child: ListTile(leading: CircleAvatar(backgroundColor: Colors.blue.withOpacity(0.1), child: const Icon(Icons.menu_book, color: Colors.blue)), title: Text(cls['subject']!, style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Class ${cls['classNum']} • ${cls['date']}'))),
             );
@@ -772,8 +747,6 @@ class DeveloperProfileDrawer extends StatelessWidget {
           const Divider(), const Padding(padding: EdgeInsets.only(left: 16, top: 8, bottom: 8), child: Align(alignment: Alignment.centerLeft, child: Text('Social Media', style: TextStyle(color: Colors.grey)))),
           ListTile(leading: const Icon(Icons.chat, color: Colors.green), title: const Text('WhatsApp'), subtitle: const Text('+94 75 169 6798'), onTap: () => _launchURL('https://wa.me/94751696798')),
           ListTile(leading: const Icon(Icons.camera_alt, color: Colors.pinkAccent), title: const Text('Instagram'), subtitle: const Text('jilaksan_k'), onTap: () => _launchURL('https://www.instagram.com/jilaksan_k?igsi=bWJocGkxNWY5MG5y')),
-          
-          // Facebook Link added back!
           ListTile(leading: const Icon(Icons.facebook, color: Colors.blue), title: const Text('Facebook'), subtitle: const Text('Kanthasamy Jilaksan'), onTap: () => _launchURL('https://www.facebook.com/share/1EZxroSv9E/')),
         ],
       ),
