@@ -4,7 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
+import 'package:path/path.dart' as p; // FIX: Alias added to prevent Context conflict
 
 bool _isFirstTimeDrawerOpened = true;
 bool _isLockScreenVisible = false; 
@@ -25,8 +25,9 @@ class DatabaseHelper {
 
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
-    final path = join(dbPath, filePath);
-    return await openDatabase(path, version: 1, onCreate: _createDB);
+    // FIX: Used p.join instead of join
+    final dbFilePath = p.join(dbPath, filePath);
+    return await openDatabase(dbFilePath, version: 1, onCreate: _createDB);
   }
 
   Future _createDB(Database db, int version) async {
