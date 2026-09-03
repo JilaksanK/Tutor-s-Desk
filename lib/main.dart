@@ -51,15 +51,14 @@ class SettingsManager {
   static set settingsBiometric(String val) => prefs.setString('settings_biometric', val);
 }
 
-// --- SECURITY GATEWAY (Core Auth Logic) ---
+// --- SECURITY GATEWAY ---
 class SecurityGateway {
   static final LocalAuthentication _auth = LocalAuthentication();
 
-  // Settings-ல் மாற்றங்கள் செய்ய Biometric Auth (Face or Fingerprint)
   static Future<bool> verifySettingsModification(BuildContext context) async {
     try {
       bool canCheck = await _auth.canCheckBiometrics;
-      if (!canCheck) return true; // Simulator / No Hardware bypass
+      if (!canCheck) return true; 
       
       return await _auth.authenticate(
         localizedReason: 'Authenticate to modify Security Settings',
@@ -71,12 +70,10 @@ class SecurityGateway {
     }
   }
 
-  // Class Delete செய்ய Admin PIN + Biometric Auth
   static Future<bool> verifyClassDeletion(BuildContext context) async {
     bool pinValid = await _askAdminPin(context);
     if (!pinValid) return false;
 
-    // PIN சரியானால் மட்டும் Biometric கேட்கும்
     try {
       bool canCheck = await _auth.canCheckBiometrics;
       if (!canCheck) return true;
@@ -91,7 +88,6 @@ class SecurityGateway {
     }
   }
 
-  // Helper for Admin PIN Popup
   static Future<bool> _askAdminPin(BuildContext context) async {
     bool isSuccess = false;
     TextEditingController pinCtrl = TextEditingController();
@@ -242,7 +238,13 @@ class _AppLockScreenState extends State<AppLockScreen> {
   void initState() {
     super.initState();
     _isLockScreenVisible = true; 
-    if (SettingsManager.useAppFace || SettingsManager.useAppFingerprint) _authenticate();
+    
+    // Auto-prompt biometrics if enabled. If only PIN is enabled, show PIN dialog automatically.
+    if (SettingsManager.useAppFace || SettingsManager.useAppFingerprint) {
+      _authenticate();
+    } else if (SettingsManager.useAppPin && SettingsManager.appPin != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _showPinDialog());
+    }
   }
 
   @override
@@ -269,6 +271,7 @@ class _AppLockScreenState extends State<AppLockScreen> {
   void _showPinDialog() {
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text("Enter App PIN"),
         content: TextField(
@@ -286,7 +289,6 @@ class _AppLockScreenState extends State<AppLockScreen> {
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
     
-    // Dynamic Icon Logic: Face vs Fingerprint
     bool onlyFace = SettingsManager.useAppFace && !SettingsManager.useAppFingerprint;
     IconData authIcon = onlyFace ? Icons.face : Icons.fingerprint;
     String authLabel = onlyFace ? 'Use Face Recognition' : 'Use Biometrics';
@@ -387,7 +389,7 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  // Wrapper function to require auth before changing any setting
+  
   Future<void> _authAndAction(Function action) async {
     bool isAuth = await SecurityGateway.verifySettingsModification(context);
     if (isAuth) {
@@ -396,6 +398,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authentication failed!'), backgroundColor: Colors.red));
     }
+  }
+
+  void _showAndroidBiometricNotice() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Android Security Notice"),
+        content: const Text("Android OS automatically uses your phone's default primary biometric (usually Fingerprint). Even if you select Face Lock here, your phone might still prompt for Fingerprint first depending on your device settings. \n\nIf the selected method doesn't appear, Sorry! This is controlled by Google's Android system."),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("I Understand"))],
+      )
+    );
+  }
+
+  void _showSetAppPinDialog() {
+    TextEditingController pinCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Set App PIN"),
+        content: TextField(
+          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true,
+          decoration: const InputDecoration(labelText: 'Enter 4-digit App PIN', border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () {
+              if (pinCtrl.text.length == 4) {
+                SettingsManager.appPin = pinCtrl.text;
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('App PIN Updated!')));
+                setState(() {});
+              }
+            },
+            child: const Text("Save PIN"),
+          )
+        ]
+      )
+    );
   }
 
   @override
@@ -412,6 +453,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: const Icon(Icons.shield, color: Colors.blue),
             onTap: () => _authAndAction(() {
               SettingsManager.settingsBiometric = SettingsManager.settingsBiometric == 'fingerprint' ? 'face' : 'fingerprint';
+              _showAndroidBiometricNotice();
             }),
           ),
           const Divider(height: 40),
@@ -425,15 +467,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (val) => _authAndAction(() { SettingsManager.isAppLockEnabled = val; }),
           ),
           if (SettingsManager.isAppLockEnabled) ...[
-            CheckboxListTile(title: const Text("Fingerprint"), value: SettingsManager.useAppFingerprint, onChanged: (val) => _authAndAction(() => SettingsManager.useAppFingerprint = val!)),
-            CheckboxListTile(title: const Text("Face Recognition"), value: SettingsManager.useAppFace, onChanged: (val) => _authAndAction(() => SettingsManager.useAppFace = val!)),
-            CheckboxListTile(title: const Text("PIN / Password"), value: SettingsManager.useAppPin, onChanged: (val) => _authAndAction(() {
-              if (val == true && SettingsManager.appPin == null) {
-                SettingsManager.appPin = "1234"; // Default dummy
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("App PIN set to 1234 (Demo)")));
-              }
-              SettingsManager.useAppPin = val!;
+            CheckboxListTile(title: const Text("Fingerprint"), value: SettingsManager.useAppFingerprint, onChanged: (val) => _authAndAction(() {
+              SettingsManager.useAppFingerprint = val!;
+              if(val) _showAndroidBiometricNotice();
             })),
+            CheckboxListTile(title: const Text("Face Recognition"), value: SettingsManager.useAppFace, onChanged: (val) => _authAndAction(() {
+              SettingsManager.useAppFace = val!;
+              if(val) _showAndroidBiometricNotice();
+            })),
+            CheckboxListTile(title: const Text("PIN / Password"), value: SettingsManager.useAppPin, onChanged: (val) => _authAndAction(() {
+              SettingsManager.useAppPin = val!;
+              if (val == true && SettingsManager.appPin == null) {
+                _showSetAppPinDialog();
+              }
+            })),
+            // App PIN Change Option
+            if (SettingsManager.useAppPin)
+              ListTile(
+                title: const Text("Change App PIN"),
+                subtitle: const Text("Set a custom PIN to unlock the app"),
+                trailing: const Icon(Icons.pin),
+                onTap: () => _authAndAction(() {
+                  _showSetAppPinDialog();
+                }),
+              ),
           ],
           const Divider(height: 40),
 
@@ -445,6 +502,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: const Icon(Icons.edit),
             onTap: () => _authAndAction(() {
                SettingsManager.classDeleteBiometric = SettingsManager.classDeleteBiometric == 'fingerprint' ? 'face' : 'fingerprint';
+               _showAndroidBiometricNotice();
             }),
           ),
           const Divider(height: 40),
@@ -468,7 +526,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-// --- BATCH MANAGEMENT SCREEN (Inside Settings) ---
+// --- BATCH MANAGEMENT SCREEN ---
 class BatchManagementScreen extends StatefulWidget {
   const BatchManagementScreen({super.key});
   @override
@@ -494,7 +552,6 @@ class _BatchManagementScreenState extends State<BatchManagementScreen> {
                   trailing: IconButton(
                     icon: const Icon(Icons.delete, color: Colors.red),
                     onPressed: () async {
-                      // Require Auth before deleting batch
                       bool isAuth = await SecurityGateway.verifySettingsModification(context);
                       if (isAuth) {
                         setState(() { AppData.batches.removeAt(index); });
@@ -509,7 +566,6 @@ class _BatchManagementScreenState extends State<BatchManagementScreen> {
     );
   }
 }
-
 
 // --- 4. DASHBOARD & OTHER SCREENS ---
 class DashboardScreen extends StatefulWidget {
@@ -527,7 +583,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         centerTitle: true, backgroundColor: Colors.transparent, elevation: 0,
         actions: [IconButton(icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode), onPressed: widget.toggleTheme)],
       ),
-      drawer: DeveloperProfileDrawer(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode, onSettingsClosed: () => setState((){})), // refresh if batch deleted
+      drawer: DeveloperProfileDrawer(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode, onSettingsClosed: () => setState((){})),
       body: AppData.batches.isEmpty 
         ? const Center(child: Text("No Batches Yet. Create your first batch!"))
         : ListView.builder(
@@ -648,12 +704,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
               key: UniqueKey(), direction: DismissDirection.endToStart,
               background: Container(margin: const EdgeInsets.symmetric(vertical: 4), decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12)), alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete_sweep, color: Colors.white, size: 30)),
               
-              // ----------------------------------------------------
-              // CLASS DELETION SECURITY LOGIC (PIN + BIOMETRIC)
-              // ----------------------------------------------------
-              confirmDismiss: (direction) async {
-                 return await SecurityGateway.verifyClassDeletion(context);
-              },
+              confirmDismiss: (direction) async { return await SecurityGateway.verifyClassDeletion(context); },
               
               onDismissed: (direction) { setState(() { classHistory.removeAt(index); completedClasses--; }); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Class removed.'))); },
               child: Card(elevation: 0, margin: const EdgeInsets.symmetric(vertical: 4), color: isDark ? const Color(0xFF1E1E1E) : Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: isDark ? Colors.grey.shade800 : Colors.grey.shade300)), child: ListTile(leading: CircleAvatar(backgroundColor: Colors.blue.withOpacity(0.1), child: const Icon(Icons.menu_book, color: Colors.blue)), title: Text(cls['subject']!, style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Class ${cls['classNum']} • ${cls['date']}'))),
@@ -714,7 +765,6 @@ class DeveloperProfileDrawer extends StatelessWidget {
             onTap: () async {
               Navigator.pop(context); 
               AdminGateway.openSettings(context, toggleTheme, isDarkMode);
-              // Wait for settings to close, then refresh dashboard in case batch was deleted
               await Future.delayed(const Duration(seconds: 1));
               onSettingsClosed();
             }
@@ -722,6 +772,9 @@ class DeveloperProfileDrawer extends StatelessWidget {
           const Divider(), const Padding(padding: EdgeInsets.only(left: 16, top: 8, bottom: 8), child: Align(alignment: Alignment.centerLeft, child: Text('Social Media', style: TextStyle(color: Colors.grey)))),
           ListTile(leading: const Icon(Icons.chat, color: Colors.green), title: const Text('WhatsApp'), subtitle: const Text('+94 75 169 6798'), onTap: () => _launchURL('https://wa.me/94751696798')),
           ListTile(leading: const Icon(Icons.camera_alt, color: Colors.pinkAccent), title: const Text('Instagram'), subtitle: const Text('jilaksan_k'), onTap: () => _launchURL('https://www.instagram.com/jilaksan_k?igsi=bWJocGkxNWY5MG5y')),
+          
+          // Facebook Link added back!
+          ListTile(leading: const Icon(Icons.facebook, color: Colors.blue), title: const Text('Facebook'), subtitle: const Text('Kanthasamy Jilaksan'), onTap: () => _launchURL('https://www.facebook.com/share/1EZxroSv9E/')),
         ],
       ),
     );
