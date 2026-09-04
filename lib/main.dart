@@ -26,12 +26,10 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final dbFilePath = p.join(dbPath, filePath);
-    // Version 2 vachirukkom, pudhusa install pannumpothu 2 tables um create aagum
     return await openDatabase(dbFilePath, version: 2, onCreate: _createDB);
   }
 
   Future _createDB(Database db, int version) async {
-    // 1. Batches Table
     await db.execute('''
       CREATE TABLE batches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +46,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // 2. Classes Table (Pudhusu)
     await db.execute('''
       CREATE TABLE classes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,11 +85,11 @@ class DatabaseHelper {
 
   Future<int> deleteBatch(int id) async {
     final db = await instance.database;
-    await db.delete('classes', where: 'batchId = ?', whereArgs: [id]); // Delete related classes
+    await db.delete('classes', where: 'batchId = ?', whereArgs: [id]); 
     return await db.delete('batches', where: 'id = ?', whereArgs: [id]);
   }
 
-  // --- CLASS DB METHODS (Pudhusu) ---
+  // --- CLASS DB METHODS ---
   Future<int> insertClass(Map<String, dynamic> classData) async {
     final db = await instance.database;
     return await db.insert('classes', classData);
@@ -100,7 +97,9 @@ class DatabaseHelper {
 
   Future<List<Map<String, dynamic>>> fetchClassesForBatch(int batchId, int setNumber) async {
     final db = await instance.database;
-    return await db.query('classes', where: 'batchId = ? AND setNumber = ?', whereArgs: [batchId, setNumber], orderBy: 'classNum DESC');
+    final result = await db.query('classes', where: 'batchId = ? AND setNumber = ?', whereArgs: [batchId, setNumber], orderBy: 'classNum DESC');
+    // FIX 1: Convert SQLite Read-Only list to Modifiable List
+    return List<Map<String, dynamic>>.from(result);
   }
 
   Future<int> deleteClass(int id) async {
@@ -429,7 +428,6 @@ class _AppLockScreenState extends State<AppLockScreen> {
                   ),
                 ),
               ),
-              // --- PUDHUSA ADD PANNA DEVELOPER PROFILE IN LOCK SCREEN ---
               const Text("Developed By", style: TextStyle(color: Colors.grey, fontSize: 12)),
               const SizedBox(height: 4),
               Text("Jilaksan_K", style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 16, fontWeight: FontWeight.bold)),
@@ -520,7 +518,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // --- PUDHUSA ADD PANNA ADMIN PIN CHANGE ---
   void _showChangeAdminPinDialog() {
     TextEditingController pinCtrl = TextEditingController();
     showDialog(
@@ -562,12 +559,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ],
           const Divider(height: 40),
           _buildSectionHeader("Class Deletion Security"),
-          ListTile(
-            title: const Text("Change Admin PIN"), 
-            subtitle: const Text("Update your admin security PIN"), 
-            trailing: const Icon(Icons.password, color: Colors.red), 
-            onTap: () => _authAndAction(() { _showChangeAdminPinDialog(); }) // Method linked here
-          ),
+          ListTile(title: const Text("Change Admin PIN"), subtitle: const Text("Update your admin security PIN"), trailing: const Icon(Icons.password, color: Colors.red), onTap: () => _authAndAction(() { _showChangeAdminPinDialog(); })),
           ListTile(title: const Text("Secondary Authentication"), subtitle: Text("Currently: ${SettingsManager.classDeleteBiometric.toUpperCase()}"), trailing: const Icon(Icons.edit), onTap: () => _authAndAction(() { SettingsManager.classDeleteBiometric = SettingsManager.classDeleteBiometric == 'fingerprint' ? 'face' : 'fingerprint'; _showAndroidBiometricNotice(); })),
           const Divider(height: 40),
           _buildSectionHeader("Batch Management"),
@@ -631,7 +623,6 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   void _refreshDashboard() {
-    // Database-la irunthu fresh aah edukkurom
     DatabaseHelper.instance.fetchAllBatches().then((data) {
       setState(() { AppData.batches = data; });
     });
@@ -657,7 +648,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 padding: const EdgeInsets.only(bottom: 16.0),
                 child: BatchCard(
                   batchData: batch,
-                  onReturn: _refreshDashboard, // This triggers when coming back from Details
+                  onReturn: _refreshDashboard, 
                 ),
               );
             },
@@ -725,7 +716,7 @@ class BatchCard extends StatelessWidget {
   Widget _buildStatColumn(String label, String value, bool isDark) { return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(label, style: TextStyle(color: isDark ? Colors.grey.shade400 : Colors.grey.shade600, fontSize: 12)), const SizedBox(height: 4), Text(value, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16))]); }
 }
 
-// --- BATCH DETAILS SCREEN (DB INTEGRATED) ---
+// --- BATCH DETAILS SCREEN (DB INTEGRATED & FIXED) ---
 class BatchDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> batch;
   const BatchDetailsScreen({super.key, required this.batch});
@@ -744,37 +735,54 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
     currentSetNumber = widget.batch['currentSetNumber'];
     completedClasses = widget.batch['completedClasses'];
     classLimit = widget.batch['classLimit'];
-    isFeePaid = widget.batch['isFeeReminder'] == false && completedClasses > 0;
+    
+    // FIX 4: Accurate Fee Paid Check initially
+    int remaining = classLimit - completedClasses;
+    if (remaining <= 3 && completedClasses < classLimit) {
+       isFeePaid = (widget.batch['feeStatus'] == '✓ Fee Collected');
+    } else {
+       isFeePaid = false;
+    }
+    
     _loadClasses();
   }
 
   Future<void> _loadClasses() async {
     final classes = await DatabaseHelper.instance.fetchClassesForBatch(widget.batch['id'], currentSetNumber);
-    setState(() {
-      classHistory = classes;
-    });
+    setState(() { classHistory = classes; });
   }
 
   Future<void> _updateBatchState() async {
-    // Local Update
     widget.batch['currentSetNumber'] = currentSetNumber;
     widget.batch['completedClasses'] = completedClasses;
     widget.batch['currentSet'] = 'Set ${currentSetNumber.toString().padLeft(2, '0')}';
     widget.batch['progress'] = '$completedClasses / $classLimit Classes';
     
+    // FIX 4: Bulletproof Reminder Zone Logic
     int remaining = classLimit - completedClasses;
-    bool needsReminder = remaining <= 3 && completedClasses < classLimit && !isFeePaid;
-    widget.batch['isFeeReminder'] = needsReminder;
-    widget.batch['feeStatus'] = needsReminder ? '⚠ Fee Reminder' : '✓ Fee Collected';
+    if (remaining <= 3 && completedClasses < classLimit) {
+       if (!isFeePaid) {
+           widget.batch['isFeeReminder'] = true;
+           widget.batch['feeStatus'] = '⚠ Fee Reminder';
+       } else {
+           widget.batch['isFeeReminder'] = false;
+           widget.batch['feeStatus'] = '✓ Fee Collected';
+       }
+    } else {
+       isFeePaid = false; 
+       widget.batch['isFeeReminder'] = false;
+       widget.batch['feeStatus'] = '✓ Fee Collected';
+    }
     
-    // DB Update
     await DatabaseHelper.instance.updateBatch(widget.batch);
   }
 
   String _getFormattedDate() { DateTime now = DateTime.now(); return '${now.day} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][now.month - 1]} ${now.year}'; }
   
   void _showAddClassDialog() {
+    // FIX 3: Strict UI limit preventer
     if (completedClasses >= classLimit) return; 
+    
     TextEditingController subjectController = TextEditingController();
     showDialog(context: context, builder: (context) {
         return AlertDialog(
@@ -798,13 +806,12 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
                 int insertedId = await DatabaseHelper.instance.insertClass(newClass);
                 newClass['id'] = insertedId;
                 
-                // Update total classes count
-                int totalCls = int.parse(widget.batch['totalClasses']) + 1;
+                int totalCls = int.parse(widget.batch['totalClasses'].toString()) + 1;
                 widget.batch['totalClasses'] = totalCls.toString();
 
                 setState(() { 
                   completedClasses++; 
-                  classHistory.insert(0, newClass); // Add to UI
+                  classHistory.insert(0, newClass);
                 }); 
                 
                 await _updateBatchState();
@@ -824,7 +831,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
     showDialog(context: context, barrierDismissible: false, builder: (context) => PopScope(canPop: false, child: AlertDialog(icon: const Icon(Icons.verified, color: Colors.green, size: 50), title: Text('Set $currentSetNumber Completed!'), content: const Text('Generating the next set automatically.'), actions: [ElevatedButton(onPressed: () async { 
       Navigator.pop(context); 
       
-      int completedSets = int.parse(widget.batch['completedSets']) + 1;
+      int completedSets = int.parse(widget.batch['completedSets'].toString()) + 1;
       widget.batch['completedSets'] = completedSets.toString();
 
       setState(() { 
@@ -840,7 +847,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   @override Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark; 
     int remainingClasses = classLimit - completedClasses;
-    bool isFeeReminder = widget.batch['isFeeReminder'];
+    bool isFeeReminder = widget.batch['isFeeReminder'] == true;
     Color progressColor = completedClasses >= classLimit ? Colors.green : (isFeeReminder ? Colors.orange : const Color(0xFF005CFF));
     
     return Scaffold(
@@ -850,7 +857,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
         children: [
           Card(elevation: isDark ? 2 : 8, shadowColor: isDark ? Colors.black54 : Colors.black26, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)), child: Padding(padding: const EdgeInsets.all(24.0), child: Column(children: [const Text('CURRENT SET', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, letterSpacing: 1)), const SizedBox(height: 10), Text('Set ${currentSetNumber.toString().padLeft(2, '0')}', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)), const SizedBox(height: 20), LinearProgressIndicator(value: completedClasses / classLimit, minHeight: 12, borderRadius: BorderRadius.circular(6), backgroundColor: isDark ? Colors.grey.shade800 : Colors.grey.shade200, color: progressColor), const SizedBox(height: 10), Text('$completedClasses / $classLimit Classes ($remainingClasses Classes Remaining)', style: const TextStyle(fontWeight: FontWeight.w500))]))), const SizedBox(height: 20),
           if (isFeeReminder) Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: isDark ? Colors.orange.shade900.withOpacity(0.3) : Colors.orange.shade50, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.orange.shade200)), child: Column(children: [Row(children: [const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 30), const SizedBox(width: 16), Expanded(child: Text('⚠ FEE REMINDER\n$remainingClasses classes remaining. Remember to collect the class fee.', style: TextStyle(color: Colors.orange.shade800, fontWeight: FontWeight.bold)))]), const SizedBox(height: 12), SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: const Icon(Icons.check_circle_outline), label: const Text('Mark Fee as Collected'), style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white), onPressed: () async { setState(() { isFeePaid = true; }); await _updateBatchState(); }))]))
-          else if (isFeePaid) Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: isDark ? Colors.green.shade900.withOpacity(0.3) : Colors.green.shade50, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.green.shade200)), child: const Row(children: [Icon(Icons.verified, color: Colors.green, size: 30), SizedBox(width: 16), Text('✓ FEE COLLECTED', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 16))])),
+          else if (isFeePaid && remainingClasses <= 3) Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: isDark ? Colors.green.shade900.withOpacity(0.3) : Colors.green.shade50, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.green.shade200)), child: const Row(children: [Icon(Icons.verified, color: Colors.green, size: 30), SizedBox(width: 16), Text('✓ FEE COLLECTED', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 16))])),
           const SizedBox(height: 20), const Text('Recent Classes (Swipe left to delete)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)), const SizedBox(height: 10),
           if (classHistory.isEmpty) Center(child: Padding(padding: const EdgeInsets.all(20.0), child: Text('No classes added in this set yet.', style: TextStyle(color: Colors.grey.shade500)))),
           ...classHistory.asMap().entries.map((entry) {
@@ -861,7 +868,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
               confirmDismiss: (direction) async { return await SecurityGateway.verifyClassDeletion(context); },
               onDismissed: (direction) async { 
                 await DatabaseHelper.instance.deleteClass(cls['id']);
-                int totalCls = int.parse(widget.batch['totalClasses']) - 1;
+                int totalCls = int.parse(widget.batch['totalClasses'].toString()) - 1;
                 widget.batch['totalClasses'] = totalCls.toString();
                 setState(() { classHistory.removeAt(index); completedClasses--; }); 
                 await _updateBatchState();
