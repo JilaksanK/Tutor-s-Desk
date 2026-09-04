@@ -26,7 +26,8 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final dbFilePath = p.join(dbPath, filePath);
-    return await openDatabase(dbFilePath, version: 2, onCreate: _createDB);
+    // Upgraded to version 3 to include removal_history
+    return await openDatabase(dbFilePath, version: 3, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
   Future _createDB(Database db, int version) async {
@@ -56,6 +57,36 @@ class DatabaseHelper {
         subject TEXT NOT NULL
       )
     ''');
+
+    await db.execute('''
+      CREATE TABLE removal_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batchId INTEGER NOT NULL,
+        batchName TEXT NOT NULL,
+        setNumber INTEGER NOT NULL,
+        classNum INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        removedOn TEXT NOT NULL
+      )
+    ''');
+  }
+
+  Future _upgradeDB(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 3) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS removal_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          batchId INTEGER NOT NULL,
+          batchName TEXT NOT NULL,
+          setNumber INTEGER NOT NULL,
+          classNum INTEGER NOT NULL,
+          date TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          removedOn TEXT NOT NULL
+        )
+      ''');
+    }
   }
 
   // --- BATCH DB METHODS ---
@@ -86,6 +117,7 @@ class DatabaseHelper {
   Future<int> deleteBatch(int id) async {
     final db = await instance.database;
     await db.delete('classes', where: 'batchId = ?', whereArgs: [id]); 
+    await db.delete('removal_history', where: 'batchId = ?', whereArgs: [id]);
     return await db.delete('batches', where: 'id = ?', whereArgs: [id]);
   }
 
@@ -98,13 +130,23 @@ class DatabaseHelper {
   Future<List<Map<String, dynamic>>> fetchClassesForBatch(int batchId, int setNumber) async {
     final db = await instance.database;
     final result = await db.query('classes', where: 'batchId = ? AND setNumber = ?', whereArgs: [batchId, setNumber], orderBy: 'classNum DESC');
-    // FIX 1: Convert SQLite Read-Only list to Modifiable List
     return List<Map<String, dynamic>>.from(result);
   }
 
   Future<int> deleteClass(int id) async {
     final db = await instance.database;
     return await db.delete('classes', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // --- REMOVAL HISTORY DB METHODS ---
+  Future<int> insertRemoval(Map<String, dynamic> removalData) async {
+    final db = await instance.database;
+    return await db.insert('removal_history', removalData);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchRemovalHistory(int batchId) async {
+    final db = await instance.database;
+    return await db.query('removal_history', where: 'batchId = ?', whereArgs: [batchId], orderBy: 'id DESC');
   }
 }
 
@@ -716,7 +758,7 @@ class BatchCard extends StatelessWidget {
   Widget _buildStatColumn(String label, String value, bool isDark) { return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(label, style: TextStyle(color: isDark ? Colors.grey.shade400 : Colors.grey.shade600, fontSize: 12)), const SizedBox(height: 4), Text(value, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16))]); }
 }
 
-// --- BATCH DETAILS SCREEN (DB INTEGRATED & FIXED) ---
+// --- BATCH DETAILS SCREEN ---
 class BatchDetailsScreen extends StatefulWidget {
   final Map<String, dynamic> batch;
   const BatchDetailsScreen({super.key, required this.batch});
@@ -736,7 +778,6 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
     completedClasses = widget.batch['completedClasses'];
     classLimit = widget.batch['classLimit'];
     
-    // FIX 4: Accurate Fee Paid Check initially
     int remaining = classLimit - completedClasses;
     if (remaining <= 3 && completedClasses < classLimit) {
        isFeePaid = (widget.batch['feeStatus'] == '✓ Fee Collected');
@@ -758,7 +799,6 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
     widget.batch['currentSet'] = 'Set ${currentSetNumber.toString().padLeft(2, '0')}';
     widget.batch['progress'] = '$completedClasses / $classLimit Classes';
     
-    // FIX 4: Bulletproof Reminder Zone Logic
     int remaining = classLimit - completedClasses;
     if (remaining <= 3 && completedClasses < classLimit) {
        if (!isFeePaid) {
@@ -780,7 +820,6 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   String _getFormattedDate() { DateTime now = DateTime.now(); return '${now.day} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][now.month - 1]} ${now.year}'; }
   
   void _showAddClassDialog() {
-    // FIX 3: Strict UI limit preventer
     if (completedClasses >= classLimit) return; 
     
     TextEditingController subjectController = TextEditingController();
@@ -851,7 +890,25 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
     Color progressColor = completedClasses >= classLimit ? Colors.green : (isFeeReminder ? Colors.orange : const Color(0xFF005CFF));
     
     return Scaffold(
-      appBar: AppBar(title: Text(widget.batch['batchName'], style: const TextStyle(fontWeight: FontWeight.bold)), centerTitle: true, backgroundColor: Colors.transparent, elevation: 0),
+      appBar: AppBar(
+        title: Text(widget.batch['batchName'], style: const TextStyle(fontWeight: FontWeight.bold)), 
+        centerTitle: true, backgroundColor: Colors.transparent, elevation: 0,
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'history') {
+                Navigator.push(context, MaterialPageRoute(builder: (context) => SetHistoryScreen(batch: widget.batch)));
+              } else if (value == 'removals') {
+                Navigator.push(context, MaterialPageRoute(builder: (context) => RemovalHistoryScreen(batchId: widget.batch['id'])));
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'history', child: Text('Set History')),
+              const PopupMenuItem(value: 'removals', child: Text('Removal History')),
+            ],
+          )
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
@@ -867,12 +924,27 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
               background: Container(margin: const EdgeInsets.symmetric(vertical: 4), decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12)), alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete_sweep, color: Colors.white, size: 30)),
               confirmDismiss: (direction) async { return await SecurityGateway.verifyClassDeletion(context); },
               onDismissed: (direction) async { 
+                
+                // Track Removal History
+                String removedDate = '${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}';
+                Map<String, dynamic> removalData = {
+                  'batchId': widget.batch['id'],
+                  'batchName': widget.batch['batchName'],
+                  'setNumber': cls['setNumber'],
+                  'classNum': cls['classNum'],
+                  'date': cls['date'],
+                  'subject': cls['subject'],
+                  'removedOn': removedDate
+                };
+                await DatabaseHelper.instance.insertRemoval(removalData);
+
                 await DatabaseHelper.instance.deleteClass(cls['id']);
                 int totalCls = int.parse(widget.batch['totalClasses'].toString()) - 1;
                 widget.batch['totalClasses'] = totalCls.toString();
+                
                 setState(() { classHistory.removeAt(index); completedClasses--; }); 
                 await _updateBatchState();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Class removed.'))); 
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Class removed and logged in history.'))); 
               },
               child: Card(elevation: 0, margin: const EdgeInsets.symmetric(vertical: 4), color: isDark ? const Color(0xFF1E1E1E) : Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: isDark ? Colors.grey.shade800 : Colors.grey.shade300)), child: ListTile(leading: CircleAvatar(backgroundColor: Colors.blue.withOpacity(0.1), child: const Icon(Icons.menu_book, color: Colors.blue)), title: Text(cls['subject']!, style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Class ${cls['classNum']} • ${cls['date']}'))),
             );
@@ -884,6 +956,137 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   }
 }
 
+// --- NEW: SET HISTORY SCREEN ---
+class SetHistoryScreen extends StatelessWidget {
+  final Map<String, dynamic> batch;
+  const SetHistoryScreen({super.key, required this.batch});
+
+  @override
+  Widget build(BuildContext context) {
+    int currentSet = batch['currentSetNumber'];
+    
+    return Scaffold(
+      appBar: AppBar(title: const Text('Set History'), centerTitle: true),
+      body: currentSet <= 1 
+        ? const Center(child: Text("No completed sets available yet."))
+        : ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: currentSet - 1,
+            itemBuilder: (context, index) {
+              int setNumber = index + 1;
+              return Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                child: ListTile(
+                  leading: const CircleAvatar(backgroundColor: Colors.green, child: Icon(Icons.check, color: Colors.white)),
+                  title: Text('Set ${setNumber.toString().padLeft(2, '0')}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text('${batch['classLimit']} / ${batch['classLimit']} Classes • Fee: Collected'),
+                  trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                  onTap: () {
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => PastSetDetailsScreen(batchId: batch['id'], setNumber: setNumber, classLimit: batch['classLimit'])));
+                  },
+                ),
+              );
+            },
+          ),
+    );
+  }
+}
+
+// --- NEW: PAST SET DETAILS SCREEN ---
+class PastSetDetailsScreen extends StatefulWidget {
+  final int batchId; final int setNumber; final int classLimit;
+  const PastSetDetailsScreen({super.key, required this.batchId, required this.setNumber, required this.classLimit});
+  @override State<PastSetDetailsScreen> createState() => _PastSetDetailsScreenState();
+}
+class _PastSetDetailsScreenState extends State<PastSetDetailsScreen> {
+  List<Map<String, dynamic>> _classes = [];
+  
+  @override void initState() { super.initState(); _fetchPastClasses(); }
+  Future<void> _fetchPastClasses() async {
+    final data = await DatabaseHelper.instance.fetchClassesForBatch(widget.batchId, widget.setNumber);
+    setState(() { _classes = data; });
+  }
+
+  @override Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Set ${widget.setNumber.toString().padLeft(2, '0')} Details'), centerTitle: true),
+      body: _classes.isEmpty 
+        ? const Center(child: CircularProgressIndicator())
+        : ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: _classes.length,
+            itemBuilder: (context, index) {
+              var cls = _classes[index];
+              return Card(
+                elevation: 0, margin: const EdgeInsets.symmetric(vertical: 4), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade300)),
+                child: ListTile(
+                  leading: CircleAvatar(backgroundColor: Colors.blue.withOpacity(0.1), child: const Icon(Icons.history_edu, color: Colors.blue)),
+                  title: Text(cls['subject'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text('Class ${cls['classNum']} • Date: ${cls['date']}'),
+                ),
+              );
+            },
+          ),
+    );
+  }
+}
+
+// --- NEW: REMOVAL HISTORY SCREEN ---
+class RemovalHistoryScreen extends StatefulWidget {
+  final int batchId;
+  const RemovalHistoryScreen({super.key, required this.batchId});
+  @override State<RemovalHistoryScreen> createState() => _RemovalHistoryScreenState();
+}
+class _RemovalHistoryScreenState extends State<RemovalHistoryScreen> {
+  List<Map<String, dynamic>> _removals = [];
+  
+  @override void initState() { super.initState(); _fetchRemovals(); }
+  Future<void> _fetchRemovals() async {
+    final data = await DatabaseHelper.instance.fetchRemovalHistory(widget.batchId);
+    setState(() { _removals = data; });
+  }
+
+  @override Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Removal History'), backgroundColor: Colors.red.withOpacity(0.1), centerTitle: true),
+      body: _removals.isEmpty
+        ? const Center(child: Text("No classes have been removed."))
+        : ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: _removals.length,
+            itemBuilder: (context, index) {
+              var removal = _removals[index];
+              return Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                shape: RoundedRectangleBorder(side: const BorderSide(color: Colors.red, width: 0.5), borderRadius: BorderRadius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('Class ${removal['classNum']} Removed', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red, fontSize: 16)),
+                          Text('Set ${removal['setNumber']}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+                        ],
+                      ),
+                      const Divider(),
+                      Text('Original Date: ${removal['date']}'),
+                      Text('Subject: ${removal['subject']}'),
+                      const SizedBox(height: 8),
+                      Text('Removed On: ${removal['removedOn']}', style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: Colors.grey)),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+    );
+  }
+}
+
+// --- CREATE BATCH SCREEN ---
 class CreateBatchScreen extends StatefulWidget { const CreateBatchScreen({super.key}); @override State<CreateBatchScreen> createState() => _CreateBatchScreenState(); }
 class _CreateBatchScreenState extends State<CreateBatchScreen> {
   final TextEditingController nameController = TextEditingController(), descController = TextEditingController(), limitController = TextEditingController(text: '8');
@@ -908,6 +1111,7 @@ class _CreateBatchScreenState extends State<CreateBatchScreen> {
   }
 }
 
+// --- DEVELOPER PROFILE DRAWER ---
 class DeveloperProfileDrawer extends StatelessWidget {
   final VoidCallback toggleTheme; final bool isDarkMode; final VoidCallback onSettingsClosed;
   const DeveloperProfileDrawer({super.key, required this.toggleTheme, required this.isDarkMode, required this.onSettingsClosed});
