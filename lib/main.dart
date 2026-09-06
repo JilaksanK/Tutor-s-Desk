@@ -6,6 +6,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
 
+// PDF & Printing packages
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+
 bool _isFirstTimeDrawerOpened = true;
 bool _isLockScreenVisible = false; 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>(); 
@@ -26,8 +31,8 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final dbFilePath = p.join(dbPath, filePath);
-    // Upgraded to version 3 to include removal_history
-    return await openDatabase(dbFilePath, version: 3, onCreate: _createDB, onUpgrade: _upgradeDB);
+    // Upgraded to version 4 to include batch_removal_history
+    return await openDatabase(dbFilePath, version: 4, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
   Future _createDB(Database db, int version) async {
@@ -70,6 +75,15 @@ class DatabaseHelper {
         removedOn TEXT NOT NULL
       )
     ''');
+
+    await db.execute('''
+      CREATE TABLE batch_removal_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batchName TEXT NOT NULL,
+        totalClasses TEXT NOT NULL,
+        deletedOn TEXT NOT NULL
+      )
+    ''');
   }
 
   Future _upgradeDB(Database db, int oldVersion, int newVersion) async {
@@ -84,6 +98,16 @@ class DatabaseHelper {
           date TEXT NOT NULL,
           subject TEXT NOT NULL,
           removedOn TEXT NOT NULL
+        )
+      ''');
+    }
+    if (oldVersion < 4) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS batch_removal_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          batchName TEXT NOT NULL,
+          totalClasses TEXT NOT NULL,
+          deletedOn TEXT NOT NULL
         )
       ''');
     }
@@ -121,6 +145,17 @@ class DatabaseHelper {
     return await db.delete('batches', where: 'id = ?', whereArgs: [id]);
   }
 
+  // --- BATCH REMOVAL HISTORY METHODS ---
+  Future<int> insertBatchRemoval(Map<String, dynamic> batchRemovalData) async {
+    final db = await instance.database;
+    return await db.insert('batch_removal_history', batchRemovalData);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchBatchRemovalHistory() async {
+    final db = await instance.database;
+    return await db.query('batch_removal_history', orderBy: 'id DESC');
+  }
+
   // --- CLASS DB METHODS ---
   Future<int> insertClass(Map<String, dynamic> classData) async {
     final db = await instance.database;
@@ -136,6 +171,18 @@ class DatabaseHelper {
   Future<int> deleteClass(int id) async {
     final db = await instance.database;
     return await db.delete('classes', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // --- SEARCH METHOD ---
+  Future<List<Map<String, dynamic>>> searchClasses(String query) async {
+    final db = await instance.database;
+    return await db.rawQuery('''
+      SELECT c.*, b.batchName 
+      FROM classes c 
+      JOIN batches b ON c.batchId = b.id 
+      WHERE c.subject LIKE '%$query%' OR b.batchName LIKE '%$query%'
+      ORDER BY c.id DESC
+    ''');
   }
 
   // --- REMOVAL HISTORY DB METHODS ---
@@ -188,6 +235,44 @@ class SettingsManager {
   static set settingsBiometric(String val) => prefs.setString('settings_biometric', val);
 }
 
+// --- PDF GENERATOR SERVICE ---
+class PdfService {
+  static Future<void> generateBatchReport(BuildContext context, Map<String, dynamic> batch) async {
+    final pdf = pw.Document();
+    
+    final db = await DatabaseHelper.instance.database;
+    final classes = await db.query('classes', where: 'batchId = ?', whereArgs: [batch['id']], orderBy: 'setNumber ASC, classNum ASC');
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        build: (context) => [
+          pw.Header(level: 0, child: pw.Text('Jilaksan_K - Class & Batch Management System', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 18))),
+          pw.SizedBox(height: 10),
+          pw.Text('Batch Name: ${batch['batchName']}', style: pw.TextStyle(fontSize: 16)),
+          pw.Text('Total Classes Completed: ${batch['totalClasses']}'),
+          pw.Text('Completed Sets: ${batch['completedSets']}'),
+          pw.Text('Report Generated On: ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}'),
+          pw.SizedBox(height: 20),
+          if (classes.isEmpty)
+            pw.Text('No classes recorded for this batch yet.')
+          else
+            pw.TableHelper.fromTextArray(
+              headers: ['Set', 'Class', 'Date', 'Subject'],
+              data: classes.map((c) => ['Set ${c['setNumber']}', 'Class ${c['classNum']}', c['date'].toString(), c['subject'].toString()]).toList(),
+              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+              headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
+              cellHeight: 30,
+              cellAlignments: {0: pw.Alignment.centerLeft, 1: pw.Alignment.centerLeft, 2: pw.Alignment.centerLeft, 3: pw.Alignment.centerLeft},
+            ),
+        ],
+      ),
+    );
+    
+    await Printing.layoutPdf(onLayout: (PdfPageFormat format) async => pdf.save(), name: '${batch['batchName']}_Report.pdf');
+  }
+}
+
 // --- SECURITY GATEWAY ---
 class SecurityGateway {
   static final LocalAuthentication _auth = LocalAuthentication();
@@ -235,8 +320,8 @@ class SecurityGateway {
       builder: (context) => AlertDialog(
         title: const Text("Enter Admin PIN"),
         content: TextField(
-          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true,
-          decoration: const InputDecoration(labelText: 'Compulsory for deletion', border: OutlineInputBorder()),
+          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true,
+          decoration: const InputDecoration(labelText: 'Compulsory for deletion (6 Digits)', border: OutlineInputBorder()),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
@@ -381,8 +466,11 @@ class _AppLockScreenState extends State<AppLockScreen> {
     
     if (SettingsManager.useAppFace || SettingsManager.useAppFingerprint) {
       _authenticate();
-    } else if (SettingsManager.useAppPin && SettingsManager.appPin != null) {
+    } else if (SettingsManager.appPin != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _showPinDialog());
+    } else {
+      // Fallback if lock is enabled but no auth method works
+      WidgetsBinding.instance.addPostFrameCallback((_) => _onUnlockSuccess());
     }
   }
 
@@ -414,7 +502,7 @@ class _AppLockScreenState extends State<AppLockScreen> {
       builder: (context) => AlertDialog(
         title: const Text("Enter App PIN"),
         content: TextField(
-          obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true,
+          obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true,
           onSubmitted: (val) {
             if (val == SettingsManager.appPin) { Navigator.pop(context); _onUnlockSuccess(); } 
             else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect PIN'))); }
@@ -457,7 +545,7 @@ class _AppLockScreenState extends State<AppLockScreen> {
                             ),
                           ),
                         const SizedBox(height: 16),
-                        if (SettingsManager.useAppPin && SettingsManager.appPin != null)
+                        if (SettingsManager.appPin != null)
                           SizedBox(
                             width: double.infinity, height: 55,
                             child: OutlinedButton.icon(
@@ -503,12 +591,12 @@ class AdminGateway {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text("This PIN is required to access Settings, delete classes, and manage batches.", style: TextStyle(fontSize: 13, color: Colors.grey)), const SizedBox(height: 15),
-            TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true, decoration: const InputDecoration(labelText: 'Enter 4-digit PIN', border: OutlineInputBorder())),
+            TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true, decoration: const InputDecoration(labelText: 'Enter 6-digit PIN', border: OutlineInputBorder())),
           ],
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-          ElevatedButton(onPressed: () { if (pinCtrl.text.length == 4) { SettingsManager.adminPin = pinCtrl.text; Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => SettingsScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode))); } }, child: const Text("Save & Continue"))
+          ElevatedButton(onPressed: () { if (pinCtrl.text.length == 6) { SettingsManager.adminPin = pinCtrl.text; Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => SettingsScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode))); } }, child: const Text("Save & Continue"))
         ],
       ),
     );
@@ -520,8 +608,8 @@ class AdminGateway {
       builder: (context) => AlertDialog(
         title: const Text("Enter Admin PIN"),
         content: TextField(
-          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true,
-          decoration: const InputDecoration(labelText: 'Admin PIN required', border: OutlineInputBorder()),
+          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true,
+          decoration: const InputDecoration(labelText: 'Admin PIN required (6 Digits)', border: OutlineInputBorder()),
           onSubmitted: (val) {
             if (val == SettingsManager.adminPin) { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => SettingsScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode))); } 
             else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect Admin PIN!', style: TextStyle(color: Colors.white)), backgroundColor: Colors.red)); }
@@ -550,12 +638,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
     showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Android Security Notice"), content: const Text("Android OS automatically uses your phone's default primary biometric (usually Fingerprint). Even if you select Face Lock here, your phone might still prompt for Fingerprint first depending on your device settings."), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("I Understand"))]));
   }
 
-  void _showSetAppPinDialog() {
+  void _showSetAppPinDialog({VoidCallback? onSuccess}) {
     TextEditingController pinCtrl = TextEditingController();
     showDialog(
-      context: context, builder: (context) => AlertDialog(
-        title: const Text("Set App PIN"), content: TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true, decoration: const InputDecoration(labelText: 'Enter 4-digit App PIN', border: OutlineInputBorder())),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")), ElevatedButton(onPressed: () { if (pinCtrl.text.length == 4) { SettingsManager.appPin = pinCtrl.text; Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('App PIN Updated!'))); setState(() {}); } }, child: const Text("Save PIN"))]
+      context: context, 
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text("Set App PIN"), 
+        content: TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true, decoration: const InputDecoration(labelText: 'Enter 6-digit App PIN', border: OutlineInputBorder())),
+        actions: [
+          TextButton(onPressed: () { Navigator.pop(context); }, child: const Text("Cancel")), 
+          ElevatedButton(onPressed: () { 
+            if (pinCtrl.text.length == 6) { 
+              SettingsManager.appPin = pinCtrl.text; 
+              Navigator.pop(context); 
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('App PIN Updated!'))); 
+              if (onSuccess != null) onSuccess();
+              setState(() {}); 
+            } 
+          }, child: const Text("Save PIN"))
+        ]
       )
     );
   }
@@ -565,11 +667,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     showDialog(
       context: context, builder: (context) => AlertDialog(
         title: const Text("Change Admin PIN"), 
-        content: TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 4, autofocus: true, decoration: const InputDecoration(labelText: 'Enter New 4-digit PIN', border: OutlineInputBorder())),
+        content: TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true, decoration: const InputDecoration(labelText: 'Enter New 6-digit PIN', border: OutlineInputBorder())),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")), 
           ElevatedButton(onPressed: () { 
-            if (pinCtrl.text.length == 4) { 
+            if (pinCtrl.text.length == 6) { 
               SettingsManager.adminPin = pinCtrl.text; 
               Navigator.pop(context); 
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Admin PIN Successfully Changed!'))); 
@@ -592,12 +694,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(title: const Text("Settings Modification Auth"), subtitle: Text("Currently: ${SettingsManager.settingsBiometric.toUpperCase()}"), trailing: const Icon(Icons.shield, color: Colors.blue), onTap: () => _authAndAction(() { SettingsManager.settingsBiometric = SettingsManager.settingsBiometric == 'fingerprint' ? 'face' : 'fingerprint'; _showAndroidBiometricNotice(); })),
           const Divider(height: 40),
           _buildSectionHeader("App Opening Lock"),
-          SwitchListTile(title: const Text("Enable App Lock", style: TextStyle(fontWeight: FontWeight.bold)), subtitle: const Text("Require auth when opening app"), value: SettingsManager.isAppLockEnabled, activeColor: const Color(0xFF005CFF), onChanged: (val) => _authAndAction(() { SettingsManager.isAppLockEnabled = val; })),
+          SwitchListTile(
+            title: const Text("Enable App Lock", style: TextStyle(fontWeight: FontWeight.bold)), 
+            subtitle: const Text("Require auth when opening app"), 
+            value: SettingsManager.isAppLockEnabled, 
+            activeColor: const Color(0xFF005CFF), 
+            onChanged: (val) => _authAndAction(() { 
+              if (val && SettingsManager.appPin == null) {
+                _showSetAppPinDialog(onSuccess: () {
+                  SettingsManager.isAppLockEnabled = true;
+                  setState(() {});
+                });
+              } else {
+                SettingsManager.isAppLockEnabled = val; 
+                setState(() {});
+              }
+            })
+          ),
           if (SettingsManager.isAppLockEnabled) ...[
             CheckboxListTile(title: const Text("Fingerprint"), value: SettingsManager.useAppFingerprint, onChanged: (val) => _authAndAction(() { SettingsManager.useAppFingerprint = val!; if(val) _showAndroidBiometricNotice(); })),
             CheckboxListTile(title: const Text("Face Recognition"), value: SettingsManager.useAppFace, onChanged: (val) => _authAndAction(() { SettingsManager.useAppFace = val!; if(val) _showAndroidBiometricNotice(); })),
-            CheckboxListTile(title: const Text("PIN / Password"), value: SettingsManager.useAppPin, onChanged: (val) => _authAndAction(() { SettingsManager.useAppPin = val!; if (val == true && SettingsManager.appPin == null) { _showSetAppPinDialog(); } })),
-            if (SettingsManager.useAppPin) ListTile(title: const Text("Change App PIN"), subtitle: const Text("Set a custom PIN to unlock the app"), trailing: const Icon(Icons.pin), onTap: () => _authAndAction(() { _showSetAppPinDialog(); })),
+            ListTile(title: const Text("Change App PIN"), subtitle: const Text("Required fallback if biometrics fail"), trailing: const Icon(Icons.pin), onTap: () => _authAndAction(() { _showSetAppPinDialog(); })),
           ],
           const Divider(height: 40),
           _buildSectionHeader("Class Deletion Security"),
@@ -623,7 +740,19 @@ class _BatchManagementScreenState extends State<BatchManagementScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Batch Management"), backgroundColor: Colors.red.withOpacity(0.1)),
+      appBar: AppBar(
+        title: const Text("Batch Management"), 
+        backgroundColor: Colors.red.withOpacity(0.1),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history, color: Colors.red),
+            tooltip: 'Batch Removal History',
+            onPressed: () {
+              Navigator.push(context, MaterialPageRoute(builder: (context) => const BatchRemovalHistoryScreen()));
+            },
+          )
+        ],
+      ),
       body: AppData.batches.isEmpty 
         ? const Center(child: Text("No Batches Found."))
         : ListView.builder(
@@ -641,10 +770,17 @@ class _BatchManagementScreenState extends State<BatchManagementScreen> {
                       bool isAuth = await SecurityGateway.verifySettingsModification(context);
                       if (isAuth) {
                         if(batch['id'] != null){
+                          // Log removal before deleting
+                          String deletedOn = '${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}';
+                          await DatabaseHelper.instance.insertBatchRemoval({
+                            'batchName': batch['batchName'],
+                            'totalClasses': batch['totalClasses'],
+                            'deletedOn': deletedOn
+                          });
                           await DatabaseHelper.instance.deleteBatch(batch['id']);
                         }
                         setState(() { AppData.batches.removeAt(index); });
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Batch Deleted Successfully')));
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Batch Deleted & Logged Successfully')));
                       }
                     },
                   ),
@@ -652,6 +788,83 @@ class _BatchManagementScreenState extends State<BatchManagementScreen> {
               );
             },
           ),
+    );
+  }
+}
+
+// --- NEW: BATCH REMOVAL HISTORY SCREEN ---
+class BatchRemovalHistoryScreen extends StatefulWidget {
+  const BatchRemovalHistoryScreen({super.key});
+  @override State<BatchRemovalHistoryScreen> createState() => _BatchRemovalHistoryScreenState();
+}
+
+class _BatchRemovalHistoryScreenState extends State<BatchRemovalHistoryScreen> {
+  List<Map<String, dynamic>> _deletedBatches = [];
+
+  @override void initState() { super.initState(); _fetchDeletedBatches(); }
+  Future<void> _fetchDeletedBatches() async {
+    final data = await DatabaseHelper.instance.fetchBatchRemovalHistory();
+    setState(() { _deletedBatches = data; });
+  }
+
+  @override Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Deleted Batches History'), backgroundColor: Colors.red.withOpacity(0.1)),
+      body: _deletedBatches.isEmpty
+        ? const Center(child: Text("No batches have been deleted."))
+        : ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: _deletedBatches.length,
+            itemBuilder: (context, index) {
+              var batch = _deletedBatches[index];
+              return Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                shape: RoundedRectangleBorder(side: const BorderSide(color: Colors.red, width: 0.5), borderRadius: BorderRadius.circular(12)),
+                child: ListTile(
+                  leading: const Icon(Icons.folder_delete, color: Colors.red, size: 30),
+                  title: Text(batch['batchName'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  subtitle: Text('Classes contained: ${batch['totalClasses']}\nDeleted On: ${batch['deletedOn']}'),
+                ),
+              );
+            },
+          ),
+    );
+  }
+}
+
+// --- SEARCH DELEGATE ---
+class AppSearchDelegate extends SearchDelegate {
+  @override
+  List<Widget>? buildActions(BuildContext context) => [IconButton(icon: const Icon(Icons.clear), onPressed: () => query = '')];
+  @override
+  Widget? buildLeading(BuildContext context) => IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => close(context, null));
+  @override
+  Widget buildResults(BuildContext context) => _buildSearchResults();
+  @override
+  Widget buildSuggestions(BuildContext context) => _buildSearchResults();
+
+  Widget _buildSearchResults() {
+    if (query.isEmpty) return const Center(child: Text('Search by subject, batch, or description...'));
+    
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: DatabaseHelper.instance.searchClasses(query),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+        final results = snapshot.data!;
+        if (results.isEmpty) return const Center(child: Text('No matching classes found.'));
+        
+        return ListView.builder(
+          itemCount: results.length,
+          itemBuilder: (context, index) {
+            final cls = results[index];
+            return ListTile(
+              leading: const Icon(Icons.search, color: Colors.blue),
+              title: Text(cls['subject'], style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text('Batch: ${cls['batchName']} • Set ${cls['setNumber']} • Class ${cls['classNum']}\nDate: ${cls['date']}'),
+            );
+          },
+        );
+      }
     );
   }
 }
@@ -676,7 +889,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       appBar: AppBar(
         title: const Text("Tutor's Desk", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5)),
         centerTitle: true, backgroundColor: Colors.transparent, elevation: 0,
-        actions: [IconButton(icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode), onPressed: widget.toggleTheme)],
+        actions: [
+          IconButton(icon: const Icon(Icons.search), onPressed: () => showSearch(context: context, delegate: AppSearchDelegate())),
+          IconButton(icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode), onPressed: widget.toggleTheme)
+        ],
       ),
       drawer: DeveloperProfileDrawer(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode, onSettingsClosed: () => setState((){})),
       body: AppData.batches.isEmpty 
@@ -900,11 +1116,14 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
                 Navigator.push(context, MaterialPageRoute(builder: (context) => SetHistoryScreen(batch: widget.batch)));
               } else if (value == 'removals') {
                 Navigator.push(context, MaterialPageRoute(builder: (context) => RemovalHistoryScreen(batchId: widget.batch['id'])));
+              } else if (value == 'report') {
+                PdfService.generateBatchReport(context, widget.batch);
               }
             },
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'history', child: Text('Set History')),
               const PopupMenuItem(value: 'removals', child: Text('Removal History')),
+              const PopupMenuItem(value: 'report', child: Text('Generate PDF Report')),
             ],
           )
         ],
@@ -956,7 +1175,7 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
   }
 }
 
-// --- NEW: SET HISTORY SCREEN ---
+// --- SET HISTORY SCREEN ---
 class SetHistoryScreen extends StatelessWidget {
   final Map<String, dynamic> batch;
   const SetHistoryScreen({super.key, required this.batch});
@@ -992,7 +1211,7 @@ class SetHistoryScreen extends StatelessWidget {
   }
 }
 
-// --- NEW: PAST SET DETAILS SCREEN ---
+// --- PAST SET DETAILS SCREEN ---
 class PastSetDetailsScreen extends StatefulWidget {
   final int batchId; final int setNumber; final int classLimit;
   const PastSetDetailsScreen({super.key, required this.batchId, required this.setNumber, required this.classLimit});
@@ -1031,7 +1250,7 @@ class _PastSetDetailsScreenState extends State<PastSetDetailsScreen> {
   }
 }
 
-// --- NEW: REMOVAL HISTORY SCREEN ---
+// --- REMOVAL HISTORY SCREEN ---
 class RemovalHistoryScreen extends StatefulWidget {
   final int batchId;
   const RemovalHistoryScreen({super.key, required this.batchId});
