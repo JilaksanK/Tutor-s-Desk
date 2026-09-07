@@ -285,6 +285,24 @@ class SettingsManager {
 // --- PDF GENERATOR SERVICE ---
 class PdfService {
 
+  // Generate ticks for X-Axis based on data to prevent errors
+  static List<double> _getXTicks(List<pw.PointChartValue> data) {
+    List<double> ticks = data.map((e) => e.x).toList();
+    if (ticks.isEmpty) return [0.0, 1.0];
+    if (ticks.length == 1) return [ticks.first - 1.0, ticks.first, ticks.first + 1.0];
+    return ticks;
+  }
+
+  // Generate dynamic scaling for Y-Axis
+  static List<double> _generateYTicks(List<pw.PointChartValue> data) {
+    if (data.isEmpty) return [0.0, 5.0, 10.0];
+    double maxVal = data.map((e) => e.y).reduce((a, b) => a > b ? a : b);
+    if (maxVal <= 0) return [0.0, 5.0, 10.0];
+    int step = (maxVal / 5).ceil();
+    if (step == 0) step = 1;
+    return List.generate(7, (i) => (i * step).toDouble());
+  }
+
   static Future<void> exportCombinedTimetable(BuildContext context) async {
     final pdf = pw.Document();
     final allTimetables = await DatabaseHelper.instance.fetchAllTimetables();
@@ -335,7 +353,6 @@ class PdfService {
       int totalClasses = int.parse(b['totalClasses'].toString());
       double val1 = (totalClasses / daysSinceCreated) * 100;
       
-      // FIXED: Used 'legend' instead of 'name'
       pie1Data.add(pw.PieDataSet(value: val1, legend: b['batchName'].toString(), color: _getRandomColor()));
 
       // Pie Chart 2: Set comparison
@@ -356,7 +373,6 @@ class PdfService {
       
       double val2 = (totalCurr + totalLast) / totalDays;
       
-      // FIXED: Used 'legend' instead of 'name'
       pie2Data.add(pw.PieDataSet(value: val2, legend: b['batchName'].toString(), color: _getRandomColor()));
     }
 
@@ -426,8 +442,11 @@ class PdfService {
           pw.Container(
             height: 150,
             child: pw.Chart(
-              // FIXED: Removed custom axis to avoid parameter errors in specific pdf package versions
-              grid: pw.CartesianGrid(),
+              // FIXED: Added explicitly required xAxis and yAxis using FixedAxis
+              grid: pw.CartesianGrid(
+                xAxis: pw.FixedAxis(_getXTicks(barData)),
+                yAxis: pw.FixedAxis(_generateYTicks(barData)),
+              ),
               datasets: [pw.BarDataSet(color: PdfColors.blue, data: barData)]
             )
           ),
@@ -438,8 +457,11 @@ class PdfService {
           pw.Container(
             height: 150,
             child: pw.Chart(
-              // FIXED: Removed custom axis to avoid parameter errors
-              grid: pw.CartesianGrid(),
+              // FIXED: Added explicitly required xAxis and yAxis using FixedAxis
+              grid: pw.CartesianGrid(
+                xAxis: pw.FixedAxis(_getXTicks(lineData)),
+                yAxis: pw.FixedAxis(_generateYTicks(lineData)),
+              ),
               datasets: [pw.LineDataSet(color: PdfColors.red, data: lineData)]
             )
           ),
@@ -1483,7 +1505,6 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
         return AlertDialog(
           title: const Text('Add New Class'),
           content: Column(mainAxisSize: MainAxisSize.min, children: [Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / $classLimit', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)), const SizedBox(height: 15), 
-          // FIXED: Removed const before InputDecoration
           TextField(controller: subjectController, decoration: InputDecoration(labelText: 'Subject / Description', border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))) ]),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
