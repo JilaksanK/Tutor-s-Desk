@@ -5,7 +5,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
-import 'package:intl/intl.dart';
+import 'dart:math';
 
 // PDF & Printing packages
 import 'package:pdf/pdf.dart';
@@ -15,6 +15,24 @@ import 'package:printing/printing.dart';
 bool _isFirstTimeDrawerOpened = true;
 bool _isLockScreenVisible = false; 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>(); 
+
+// --- DATE PARSER HELPER ---
+class DateHelper {
+  static DateTime parseDate(String dateStr) {
+    try {
+      if (dateStr.contains('/')) {
+        var parts = dateStr.split('/');
+        return DateTime(int.parse(parts[2]), int.parse(parts[1]), int.parse(parts[0]));
+      } else {
+        var parts = dateStr.split(' ');
+        const months = {'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6, 'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12};
+        return DateTime(int.parse(parts[2]), months[parts[1]] ?? 1, int.parse(parts[0]));
+      }
+    } catch (e) {
+      return DateTime.now();
+    }
+  }
+}
 
 // --- DATABASE HELPER ---
 class DatabaseHelper {
@@ -32,7 +50,6 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final dbFilePath = p.join(dbPath, filePath);
-    // Upgraded to version 5 for Timetables & Batch CreatedAt
     return await openDatabase(dbFilePath, version: 5, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
@@ -50,13 +67,10 @@ class DatabaseHelper {
         classLimit INTEGER NOT NULL,
         currentSetNumber INTEGER NOT NULL,
         completedClasses INTEGER NOT NULL,
-        createdAt TEXT NOT NULL
+        createdDate TEXT NOT NULL
       )
     ''');
-    await _createOtherTables(db);
-  }
 
-  Future _createOtherTables(Database db) async {
     await db.execute('''
       CREATE TABLE classes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +81,7 @@ class DatabaseHelper {
         subject TEXT NOT NULL
       )
     ''');
+
     await db.execute('''
       CREATE TABLE removal_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +94,7 @@ class DatabaseHelper {
         removedOn TEXT NOT NULL
       )
     ''');
+
     await db.execute('''
       CREATE TABLE batch_removal_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,37 +103,36 @@ class DatabaseHelper {
         deletedOn TEXT NOT NULL
       )
     ''');
+
     await db.execute('''
       CREATE TABLE timetables (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         batchId INTEGER NOT NULL,
         day TEXT NOT NULL,
-        startMins INTEGER NOT NULL,
-        endMins INTEGER NOT NULL,
-        timeLabel TEXT NOT NULL
+        startTime TEXT NOT NULL,
+        endTime TEXT NOT NULL
       )
     ''');
   }
 
   Future _upgradeDB(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 3) {
-      await db.execute('CREATE TABLE IF NOT EXISTS removal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, batchId INTEGER NOT NULL, batchName TEXT NOT NULL, setNumber INTEGER NOT NULL, classNum INTEGER NOT NULL, date TEXT NOT NULL, subject TEXT NOT NULL, removedOn TEXT NOT NULL)');
+      await db.execute('''CREATE TABLE IF NOT EXISTS removal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, batchId INTEGER NOT NULL, batchName TEXT NOT NULL, setNumber INTEGER NOT NULL, classNum INTEGER NOT NULL, date TEXT NOT NULL, subject TEXT NOT NULL, removedOn TEXT NOT NULL)''');
     }
     if (oldVersion < 4) {
-      await db.execute('CREATE TABLE IF NOT EXISTS batch_removal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, batchName TEXT NOT NULL, totalClasses TEXT NOT NULL, deletedOn TEXT NOT NULL)');
+      await db.execute('''CREATE TABLE IF NOT EXISTS batch_removal_history (id INTEGER PRIMARY KEY AUTOINCREMENT, batchName TEXT NOT NULL, totalClasses TEXT NOT NULL, deletedOn TEXT NOT NULL)''');
     }
     if (oldVersion < 5) {
-      await db.execute('ALTER TABLE batches ADD COLUMN createdAt TEXT DEFAULT "${DateTime.now().toIso8601String()}"');
-      await db.execute('CREATE TABLE IF NOT EXISTS timetables (id INTEGER PRIMARY KEY AUTOINCREMENT, batchId INTEGER NOT NULL, day TEXT NOT NULL, startMins INTEGER NOT NULL, endMins INTEGER NOT NULL, timeLabel TEXT NOT NULL)');
+      await db.execute('ALTER TABLE batches ADD COLUMN createdDate TEXT DEFAULT "${DateTime.now().toString()}"');
+      await db.execute('''CREATE TABLE IF NOT EXISTS timetables (id INTEGER PRIMARY KEY AUTOINCREMENT, batchId INTEGER NOT NULL, day TEXT NOT NULL, startTime TEXT NOT NULL, endTime TEXT NOT NULL)''');
     }
   }
 
-  // --- BATCH DB METHODS ---
+  // Batch Methods
   Future<int> insertBatch(Map<String, dynamic> batch) async {
     final db = await instance.database;
     Map<String, dynamic> dbBatch = Map.from(batch);
     dbBatch['isFeeReminder'] = dbBatch['isFeeReminder'] == true ? 1 : 0;
-    if(!dbBatch.containsKey('createdAt')) dbBatch['createdAt'] = DateTime.now().toIso8601String();
     return await db.insert('batches', dbBatch);
   }
 
@@ -146,32 +161,84 @@ class DatabaseHelper {
     return await db.delete('batches', where: 'id = ?', whereArgs: [id]);
   }
 
-  // --- CLASS & OTHER DB METHODS ---
-  Future<int> insertClass(Map<String, dynamic> classData) async { return await (await instance.database).insert('classes', classData); }
-  Future<List<Map<String, dynamic>>> fetchClassesForBatch(int batchId, int setNumber) async { return List<Map<String, dynamic>>.from(await (await instance.database).query('classes', where: 'batchId = ? AND setNumber = ?', whereArgs: [batchId, setNumber], orderBy: 'classNum DESC')); }
-  Future<List<Map<String, dynamic>>> fetchAllClassesForBatch(int batchId) async { return await (await instance.database).query('classes', where: 'batchId = ?', whereArgs: [batchId], orderBy: 'setNumber ASC, classNum ASC'); }
-  Future<int> deleteClass(int id) async { return await (await instance.database).delete('classes', where: 'id = ?', whereArgs: [id]); }
+  Future<int> insertBatchRemoval(Map<String, dynamic> data) async {
+    final db = await instance.database;
+    return await db.insert('batch_removal_history', data);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchBatchRemovalHistory() async {
+    final db = await instance.database;
+    return await db.query('batch_removal_history', orderBy: 'id DESC');
+  }
+
+  // Class Methods
+  Future<int> insertClass(Map<String, dynamic> classData) async {
+    final db = await instance.database;
+    return await db.insert('classes', classData);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchClassesForBatch(int batchId, int setNumber) async {
+    final db = await instance.database;
+    final result = await db.query('classes', where: 'batchId = ? AND setNumber = ?', whereArgs: [batchId, setNumber], orderBy: 'classNum DESC');
+    return List<Map<String, dynamic>>.from(result);
+  }
   
+  Future<List<Map<String, dynamic>>> fetchAllClassesForBatch(int batchId) async {
+    final db = await instance.database;
+    return await db.query('classes', where: 'batchId = ?', whereArgs: [batchId], orderBy: 'setNumber ASC, classNum ASC');
+  }
+
+  Future<int> deleteClass(int id) async {
+    final db = await instance.database;
+    return await db.delete('classes', where: 'id = ?', whereArgs: [id]);
+  }
+
   Future<List<Map<String, dynamic>>> searchClasses(String query) async {
     final db = await instance.database;
     return await db.rawQuery('''
       SELECT c.*, b.batchName 
-      FROM classes c JOIN batches b ON c.batchId = b.id 
+      FROM classes c 
+      JOIN batches b ON c.batchId = b.id 
       WHERE c.subject LIKE '%$query%' OR b.batchName LIKE '%$query%' OR c.date LIKE '%$query%'
       ORDER BY c.id DESC
     ''');
   }
 
-  Future<int> insertRemoval(Map<String, dynamic> removalData) async { return await (await instance.database).insert('removal_history', removalData); }
-  Future<List<Map<String, dynamic>>> fetchRemovalHistory(int batchId) async { return await (await instance.database).query('removal_history', where: 'batchId = ?', whereArgs: [batchId], orderBy: 'id DESC'); }
-  Future<int> insertBatchRemoval(Map<String, dynamic> data) async { return await (await instance.database).insert('batch_removal_history', data); }
-  Future<List<Map<String, dynamic>>> fetchBatchRemovalHistory() async { return await (await instance.database).query('batch_removal_history', orderBy: 'id DESC'); }
+  Future<int> insertRemoval(Map<String, dynamic> removalData) async {
+    final db = await instance.database;
+    return await db.insert('removal_history', removalData);
+  }
 
-  // --- TIMETABLE METHODS ---
-  Future<int> insertTimetable(Map<String, dynamic> data) async { return await (await instance.database).insert('timetables', data); }
-  Future<int> deleteTimetable(int id) async { return await (await instance.database).delete('timetables', where: 'id = ?', whereArgs: [id]); }
-  Future<List<Map<String, dynamic>>> fetchTimetableForBatch(int batchId) async { return await (await instance.database).query('timetables', where: 'batchId = ?', whereArgs: [batchId]); }
-  Future<List<Map<String, dynamic>>> fetchAllTimetables() async { return await (await instance.database).query('timetables'); }
+  Future<List<Map<String, dynamic>>> fetchRemovalHistory(int batchId) async {
+    final db = await instance.database;
+    return await db.query('removal_history', where: 'batchId = ?', whereArgs: [batchId], orderBy: 'id DESC');
+  }
+
+  // Timetable Methods
+  Future<int> insertTimetable(Map<String, dynamic> data) async {
+    final db = await instance.database;
+    return await db.insert('timetables', data);
+  }
+
+  Future<int> updateTimetable(Map<String, dynamic> data) async {
+    final db = await instance.database;
+    return await db.update('timetables', data, where: 'id = ?', whereArgs: [data['id']]);
+  }
+
+  Future<int> deleteTimetable(int id) async {
+    final db = await instance.database;
+    return await db.delete('timetables', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchTimetablesForBatch(int batchId) async {
+    final db = await instance.database;
+    return await db.query('timetables', where: 'batchId = ?', whereArgs: [batchId]);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchAllTimetables() async {
+    final db = await instance.database;
+    return await db.rawQuery('SELECT t.*, b.batchName FROM timetables t JOIN batches b ON t.batchId = b.id');
+  }
 }
 
 // --- GLOBAL APP DATA ---
@@ -182,121 +249,253 @@ class AppData {
 // --- SECURITY & SETTINGS MANAGER ---
 class SettingsManager {
   static late SharedPreferences prefs;
-  static Future<void> init() async { prefs = await SharedPreferences.getInstance(); }
+
+  static Future<void> init() async {
+    prefs = await SharedPreferences.getInstance();
+  }
 
   static bool get isAppLockEnabled => prefs.getBool('app_lock_enabled') ?? false;
   static set isAppLockEnabled(bool val) => prefs.setBool('app_lock_enabled', val);
+
   static bool get useAppFingerprint => prefs.getBool('app_fingerprint') ?? true;
   static set useAppFingerprint(bool val) => prefs.setBool('app_fingerprint', val);
+
   static bool get useAppFace => prefs.getBool('app_face') ?? true;
   static set useAppFace(bool val) => prefs.setBool('app_face', val);
+
   static bool get useAppPin => prefs.getBool('app_pin_enabled') ?? true;
   static set useAppPin(bool val) => prefs.setBool('app_pin_enabled', val);
+
   static String? get appPin => prefs.getString('app_pin');
   static set appPin(String? val) => val == null ? prefs.remove('app_pin') : prefs.setString('app_pin', val);
+
   static String? get adminPin => prefs.getString('admin_pin');
   static set adminPin(String? val) => val == null ? prefs.remove('admin_pin') : prefs.setString('admin_pin', val);
+
   static String get classDeleteBiometric => prefs.getString('delete_biometric') ?? 'fingerprint'; 
   static set classDeleteBiometric(String val) => prefs.setString('delete_biometric', val);
+
   static String get settingsBiometric => prefs.getString('settings_biometric') ?? 'fingerprint'; 
   static set settingsBiometric(String val) => prefs.setString('settings_biometric', val);
-  
-  // New Setting for Timetable
+
   static bool get isTimetableEnabled => prefs.getBool('timetable_enabled') ?? true;
   static set isTimetableEnabled(bool val) => prefs.setBool('timetable_enabled', val);
 }
 
-// --- ADVANCED PDF GENERATOR SERVICE ---
-class AdvancedPdfService {
-  static Future<void> generateAdvancedReport(BuildContext context, Map<String, dynamic>? selectedBatch, bool includeDeleted) async {
+// --- PDF GENERATOR SERVICE ---
+class PdfService {
+
+  static Future<void> exportCombinedTimetable(BuildContext context) async {
     final pdf = pw.Document();
-    final batches = await DatabaseHelper.instance.fetchAllBatches();
-    if(batches.isEmpty) return;
+    final allTimetables = await DatabaseHelper.instance.fetchAllTimetables();
 
-    List<pw.Widget> elements = [];
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        build: (context) => [
+          pw.Header(level: 0, child: pw.Text('Combined Timetable - All Batches', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 18))),
+          pw.SizedBox(height: 20),
+          if (allTimetables.isEmpty)
+            pw.Text('No timetables available.')
+          else
+            pw.TableHelper.fromTextArray(
+              headers: ['Batch', 'Day', 'Start Time', 'End Time'],
+              data: allTimetables.map((t) => [t['batchName'], t['day'], t['startTime'], t['endTime']]).toList(),
+              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+              headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
+            )
+        ]
+      )
+    );
+    await Printing.layoutPdf(onLayout: (PdfPageFormat format) async => pdf.save(), name: 'Combined_Timetable.pdf');
+  }
 
-    elements.add(pw.Header(level: 0, child: pw.Text('Jilaksan_K - Class & Batch Management System', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 18))));
-    elements.add(pw.SizedBox(height: 10));
-    elements.add(pw.Text('Report Generated On: ${DateFormat('dd/MM/yyyy').format(DateTime.now())}'));
-    elements.add(pw.SizedBox(height: 20));
-
-    // 1 & 2. Pie Charts comparing all batches
-    elements.add(pw.Text('Performance Comparison (All Batches)', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)));
-    elements.add(pw.SizedBox(height: 10));
+  static Future<void> generateBatchReport(BuildContext context, Map<String, dynamic> batch, bool includeDeleted) async {
+    final pdf = pw.Document();
+    final db = await DatabaseHelper.instance.database;
     
-    // Creating basic textual visualization for charts since complex graphics require specific packages, 
-    // Using simple bar/text representations to ensure PDF works flawlessly without heavy canvas rendering.
-    for(var b in batches) {
-      DateTime created = DateTime.tryParse(b['createdAt'].toString()) ?? DateTime.now();
-      int daysSince = DateTime.now().difference(created).inDays;
-      if(daysSince == 0) daysSince = 1;
+    final classes = await db.query('classes', where: 'batchId = ?', whereArgs: [batch['id']], orderBy: 'setNumber ASC, classNum ASC');
+    List<Map<String, dynamic>> deletedClasses = [];
+    if (includeDeleted) {
+      deletedClasses = await db.query('removal_history', where: 'batchId = ?', whereArgs: [batch['id']], orderBy: 'id ASC');
+    }
+    
+    final timetables = await db.query('timetables', where: 'batchId = ?', whereArgs: [batch['id']]);
+    final allBatches = await DatabaseHelper.instance.fetchAllBatches();
+
+    // Chart Data calculations
+    List<pw.PieDataSet> pie1Data = [];
+    List<pw.PieDataSet> pie2Data = [];
+    
+    for (var b in allBatches) {
+      DateTime createdDate = b['createdDate'] != null ? DateTime.parse(b['createdDate']) : DateTime.now();
+      int daysSinceCreated = DateTime.now().difference(createdDate).inDays;
+      if (daysSinceCreated == 0) daysSinceCreated = 1; 
+      
       int totalClasses = int.parse(b['totalClasses'].toString());
-      double performanceRatio = (totalClasses / daysSince) * 100;
+      double val1 = (totalClasses / daysSinceCreated) * 100;
+      pie1Data.add(pw.PieDataSet(value: val1, name: b['batchName'], color: _getRandomColor()));
+
+      // Pie Chart 2: Set comparison
+      final bClasses = await db.query('classes', where: 'batchId = ?', whereArgs: [b['id']], orderBy: 'setNumber ASC, classNum ASC');
+      int currentSet = b['currentSetNumber'];
+      int lastSet = currentSet > 1 ? currentSet - 1 : currentSet;
       
-      elements.add(pw.Row(children: [
-        pw.Expanded(flex: 2, child: pw.Text('${b['batchName']}: ')),
-        pw.Expanded(flex: 5, child: pw.Container(height: 10, width: performanceRatio.clamp(0, 100).toDouble() * 3, color: PdfColors.blue)),
-        pw.Expanded(flex: 2, child: pw.Text('  ${performanceRatio.toStringAsFixed(1)} score')),
-      ]));
-      elements.add(pw.SizedBox(height: 5));
+      List<Map<String, dynamic>> currSetClasses = bClasses.where((c) => c['setNumber'] == currentSet).toList();
+      List<Map<String, dynamic>> lastSetClasses = bClasses.where((c) => c['setNumber'] == lastSet).toList();
+      
+      int totalCurr = currSetClasses.length;
+      int totalLast = lastSetClasses.length;
+      
+      int daysCurr = _calculateDaysForClasses(currSetClasses);
+      int daysLast = _calculateDaysForClasses(lastSetClasses);
+      int totalDays = daysCurr + daysLast;
+      if (totalDays == 0) totalDays = 1;
+      
+      double val2 = (totalCurr + totalLast) / totalDays;
+      pie2Data.add(pw.PieDataSet(value: val2, name: b['batchName'], color: _getRandomColor()));
     }
 
-    elements.add(pw.SizedBox(height: 20));
+    // Column Chart Current Batch Data
+    List<pw.PointChartValue> barData = [];
+    Map<int, int> setDays = {};
+    for (var c in classes) {
+      int sNum = c['setNumber'] as int;
+      List<Map<String, dynamic>> setCls = classes.where((cls) => cls['setNumber'] == sNum).toList();
+      setDays[sNum] = _calculateDaysForClasses(setCls);
+    }
+    setDays.forEach((k, v) {
+      barData.add(pw.PointChartValue(k.toDouble(), v.toDouble()));
+    });
 
-    // Specific Batch Details
-    List<Map<String, dynamic>> targetBatches = selectedBatch != null ? [selectedBatch] : batches;
-
-    for (var b in targetBatches) {
-      elements.add(pw.Divider());
-      elements.add(pw.Text('Batch: ${b['batchName']}', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)));
-      elements.add(pw.Text('Total Classes: ${b['totalClasses']} | Completed Sets: ${b['completedSets']}'));
-      elements.add(pw.SizedBox(height: 10));
-      
-      final classes = await DatabaseHelper.instance.fetchAllClassesForBatch(b['id']);
-      if (classes.isEmpty) {
-        elements.add(pw.Text('No classes recorded yet.'));
-      } else {
-        elements.add(pw.TableHelper.fromTextArray(
-          headers: ['Set', 'Class', 'Date', 'Subject'],
-          data: classes.map((c) => ['Set ${c['setNumber']}', 'Class ${c['classNum']}', c['date'].toString(), c['subject'].toString()]).toList(),
-          headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-          headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
-          cellHeight: 25,
-        ));
-      }
-
-      // Append Deleted Classes if requested
-      if (includeDeleted) {
-        final removals = await DatabaseHelper.instance.fetchRemovalHistory(b['id']);
-        if (removals.isNotEmpty) {
-          elements.add(pw.SizedBox(height: 15));
-          elements.add(pw.Text('Deleted Classes History', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.red800)));
-          elements.add(pw.TableHelper.fromTextArray(
-            headers: ['Set', 'Class', 'Original Date', 'Subject', 'Deleted On'],
-            data: removals.map((r) => ['Set ${r['setNumber']}', 'Class ${r['classNum']}', r['date'].toString(), r['subject'].toString(), r['removedOn'].toString()]).toList(),
-            headerDecoration: const pw.BoxDecoration(color: PdfColors.red100),
-            cellHeight: 25,
-          ));
-        }
-      }
-      
-      // Timetable
-      final timetables = await DatabaseHelper.instance.fetchTimetableForBatch(b['id']);
-      if (timetables.isNotEmpty) {
-        elements.add(pw.SizedBox(height: 15));
-        elements.add(pw.Text('Timetable', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.green800)));
-        elements.add(pw.TableHelper.fromTextArray(
-          headers: ['Day', 'Time'],
-          data: timetables.map((t) => [t['day'].toString(), t['timeLabel'].toString()]).toList(),
-          headerDecoration: const pw.BoxDecoration(color: PdfColors.green100),
-          cellHeight: 25,
-        ));
-      }
-      elements.add(pw.SizedBox(height: 20));
+    // Line Chart All Batches
+    List<pw.PointChartValue> lineData = [];
+    int batchIndex = 0;
+    for (var b in allBatches) {
+      final bClasses = await db.query('classes', where: 'batchId = ?', whereArgs: [b['id']], orderBy: 'setNumber ASC, classNum ASC');
+      int currentSet = b['currentSetNumber'];
+      int lastCompletedSet = currentSet > 1 ? currentSet - 1 : 1;
+      List<Map<String, dynamic>> lastCompClasses = bClasses.where((c) => c['setNumber'] == lastCompletedSet).toList();
+      int days = _calculateDaysForClasses(lastCompClasses);
+      lineData.add(pw.PointChartValue(batchIndex.toDouble(), days.toDouble()));
+      batchIndex++;
     }
 
-    pdf.addPage(pw.MultiPage(pageFormat: PdfPageFormat.a4, build: (context) => elements));
-    await Printing.layoutPdf(onLayout: (PdfPageFormat format) async => pdf.save(), name: 'TutorsDesk_Report.pdf');
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        build: (context) => [
+          pw.Header(level: 0, child: pw.Text('Jilaksan_K [BSc (Dat Sc) {R} SUSL]', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 18))),
+          pw.SizedBox(height: 10),
+          pw.Text('Batch Name: ${batch['batchName']}', style: pw.TextStyle(fontSize: 16)),
+          pw.Text('Total Classes Completed: ${batch['totalClasses']}'),
+          pw.Text('Report Generated On: ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}'),
+          pw.SizedBox(height: 20),
+
+          pw.Text('Pie Chart 01 - Compare All Batches', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+          pw.Text('Formula: (Total Classes Taken / Days Since Created) * 100', style: const pw.TextStyle(fontSize: 10)),
+          pw.SizedBox(height: 10),
+          pw.Container(
+            height: 200,
+            child: pw.Chart(
+              grid: pw.PieGrid(),
+              datasets: pie1Data,
+            )
+          ),
+          pw.SizedBox(height: 20),
+
+          pw.Text('Pie Chart 02 - Compare All Batches', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+          pw.Text('Formula: (Total Last & Current Set Classes) / (Days Taken)', style: const pw.TextStyle(fontSize: 10)),
+          pw.SizedBox(height: 10),
+          pw.Container(
+            height: 200,
+            child: pw.Chart(
+              grid: pw.PieGrid(),
+              datasets: pie2Data,
+            )
+          ),
+          pw.SizedBox(height: 20),
+          
+          pw.Text('Column Chart - Current Batch Only', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+          pw.Text('X-Axis: Set | Y-Axis: Days Taken', style: const pw.TextStyle(fontSize: 10)),
+          pw.SizedBox(height: 10),
+          pw.Container(
+            height: 150,
+            child: pw.Chart(
+              grid: pw.CartesianGrid(
+                xAxis: pw.NumericAxis(title: pw.ChartLegend(pw.Text('Set'))),
+                yAxis: pw.NumericAxis(title: pw.ChartLegend(pw.Text('Days'))),
+              ),
+              datasets: [pw.BarDataSet(color: PdfColors.blue, data: barData)]
+            )
+          ),
+          pw.SizedBox(height: 20),
+
+          pw.Text('Line Chart - Set Completion Performance (Lower is better)', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+          pw.SizedBox(height: 10),
+          pw.Container(
+            height: 150,
+            child: pw.Chart(
+              grid: pw.CartesianGrid(
+                xAxis: pw.NumericAxis(title: pw.ChartLegend(pw.Text('Batches'))),
+                yAxis: pw.NumericAxis(title: pw.ChartLegend(pw.Text('Days for Last Set'))),
+              ),
+              datasets: [pw.LineDataSet(color: PdfColors.red, data: lineData)]
+            )
+          ),
+          pw.SizedBox(height: 20),
+          
+          if (timetables.isNotEmpty) ...[
+            pw.Text('Batch Timetable', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+            pw.TableHelper.fromTextArray(
+              headers: ['Day', 'Start Time', 'End Time'],
+              data: timetables.map((t) => [t['day'].toString(), t['startTime'].toString(), t['endTime'].toString()]).toList(),
+              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+              headerDecoration: const pw.BoxDecoration(color: PdfColors.grey300),
+            ),
+            pw.SizedBox(height: 20),
+          ],
+
+          pw.Text('Class History', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+          if (classes.isEmpty)
+            pw.Text('No classes recorded for this batch yet.')
+          else
+            pw.TableHelper.fromTextArray(
+              headers: ['Set', 'Class', 'Date', 'Subject'],
+              data: classes.map((c) => ['Set ${c['setNumber']}', 'Class ${c['classNum']}', c['date'].toString(), c['subject'].toString()]).toList(),
+              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+              headerDecoration: const pw.BoxDecoration(color: PdfColors.blue100),
+            ),
+          
+          if (includeDeleted && deletedClasses.isNotEmpty) ...[
+            pw.SizedBox(height: 20),
+            pw.Text('Deleted Classes History', style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.red)),
+            pw.TableHelper.fromTextArray(
+              headers: ['Set', 'Class', 'Orig Date', 'Subject', 'Removed On'],
+              data: deletedClasses.map((d) => ['Set ${d['setNumber']}', 'Class ${d['classNum']}', d['date'].toString(), d['subject'].toString(), d['removedOn'].toString()]).toList(),
+              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white),
+              headerDecoration: const pw.BoxDecoration(color: PdfColors.red300),
+            )
+          ]
+        ],
+      ),
+    );
+    
+    await Printing.layoutPdf(onLayout: (PdfPageFormat format) async => pdf.save(), name: '${batch['batchName']}_Report.pdf');
+  }
+
+  static PdfColor _getRandomColor() {
+    final List<PdfColor> colors = [PdfColors.blue, PdfColors.red, PdfColors.green, PdfColors.orange, PdfColors.purple, PdfColors.teal, PdfColors.amber, PdfColors.pink];
+    return colors[Random().nextInt(colors.length)];
+  }
+
+  static int _calculateDaysForClasses(List<Map<String, dynamic>> clsList) {
+    if (clsList.isEmpty) return 1;
+    if (clsList.length == 1) return 1;
+    DateTime first = DateHelper.parseDate(clsList.first['date']);
+    DateTime last = DateHelper.parseDate(clsList.last['date']);
+    int days = last.difference(first).inDays.abs();
+    return days == 0 ? 1 : days;
   }
 }
 
@@ -308,23 +507,65 @@ class SecurityGateway {
     try {
       bool canCheck = await _auth.canCheckBiometrics;
       if (!canCheck) return true; 
-      return await _auth.authenticate(localizedReason: 'Authenticate to modify Security Settings', options: const AuthenticationOptions(stickyAuth: true, biometricOnly: true));
-    } catch (e) { return false; }
+      
+      return await _auth.authenticate(
+        localizedReason: 'Authenticate to modify Security Settings',
+        options: const AuthenticationOptions(stickyAuth: true, biometricOnly: true),
+      );
+    } catch (e) {
+      debugPrint("Auth Error: $e");
+      return false;
+    }
   }
 
   static Future<bool> verifyClassDeletion(BuildContext context) async {
     bool pinValid = await _askAdminPin(context);
     if (!pinValid) return false;
+
     try {
       bool canCheck = await _auth.canCheckBiometrics;
       if (!canCheck) return true;
-      return await _auth.authenticate(localizedReason: 'Verify Biometric to Delete Class', options: const AuthenticationOptions(stickyAuth: true, biometricOnly: true));
-    } catch (e) { return false; }
+      
+      return await _auth.authenticate(
+        localizedReason: 'Verify Biometric to Delete Class',
+        options: const AuthenticationOptions(stickyAuth: true, biometricOnly: true),
+      );
+    } catch (e) {
+      debugPrint("Auth Error: $e");
+      return false;
+    }
   }
 
   static Future<bool> _askAdminPin(BuildContext context) async {
-    bool isSuccess = false; TextEditingController pinCtrl = TextEditingController();
-    await showDialog(context: context, barrierDismissible: false, builder: (context) => AlertDialog(title: const Text("Enter Admin PIN"), content: TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true, decoration: const InputDecoration(labelText: 'Compulsory for deletion (6 Digits)', border: OutlineInputBorder())), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")), ElevatedButton(onPressed: () { if (pinCtrl.text == SettingsManager.adminPin) { isSuccess = true; Navigator.pop(context); } else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect Admin PIN!'), backgroundColor: Colors.red)); Navigator.pop(context); } }, child: const Text("Verify"))]));
+    bool isSuccess = false;
+    TextEditingController pinCtrl = TextEditingController();
+    
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text("Enter Admin PIN"),
+        content: TextField(
+          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true,
+          decoration: const InputDecoration(labelText: 'Compulsory for deletion (6 Digits)', border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () {
+              if (pinCtrl.text == SettingsManager.adminPin) {
+                isSuccess = true;
+                Navigator.pop(context);
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect Admin PIN!', style: TextStyle(color: Colors.white)), backgroundColor: Colors.red));
+                Navigator.pop(context);
+              }
+            },
+            child: const Text("Verify"),
+          )
+        ],
+      ),
+    );
     return isSuccess;
   }
 }
@@ -332,21 +573,38 @@ class SecurityGateway {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  
   await SettingsManager.init(); 
   AppData.batches = await DatabaseHelper.instance.fetchAllBatches();
+  
   runApp(const TutorsDeskApp());
 }
 
 class TutorsDeskApp extends StatefulWidget {
   const TutorsDeskApp({super.key});
-  @override State<TutorsDeskApp> createState() => _TutorsDeskAppState();
+
+  @override
+  State<TutorsDeskApp> createState() => _TutorsDeskAppState();
 }
 
 class _TutorsDeskAppState extends State<TutorsDeskApp> with WidgetsBindingObserver {
-  ThemeMode _themeMode = ThemeMode.light; bool _requiresAuth = false; 
-  @override void initState() { super.initState(); WidgetsBinding.instance.addObserver(this); }
-  @override void dispose() { WidgetsBinding.instance.removeObserver(this); super.dispose(); }
-  @override void didChangeAppLifecycleState(AppLifecycleState state) {
+  ThemeMode _themeMode = ThemeMode.light;
+  bool _requiresAuth = false; 
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this); 
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       if (SettingsManager.isAppLockEnabled) _requiresAuth = true; 
     } else if (state == AppLifecycleState.resumed) {
@@ -356,9 +614,20 @@ class _TutorsDeskAppState extends State<TutorsDeskApp> with WidgetsBindingObserv
       }
     }
   }
+
   void toggleTheme() { setState(() { _themeMode = _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light; }); }
-  @override Widget build(BuildContext context) {
-    return MaterialApp(navigatorKey: navigatorKey, title: "Tutor's Desk", debugShowCheckedModeBanner: false, themeMode: _themeMode, theme: ThemeData(useMaterial3: true, brightness: Brightness.light, scaffoldBackgroundColor: const Color(0xFFE8E8ED), colorScheme: ColorScheme.fromSeed(brightness: Brightness.light, seedColor: const Color(0xFF005CFF))), darkTheme: ThemeData(useMaterial3: true, brightness: Brightness.dark, scaffoldBackgroundColor: const Color(0xFF121212), colorScheme: ColorScheme.fromSeed(brightness: Brightness.dark, seedColor: const Color(0xFF005CFF))), home: SplashScreen(toggleTheme: toggleTheme, isDarkMode: _themeMode == ThemeMode.dark));
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      navigatorKey: navigatorKey, 
+      title: "Tutor's Desk",
+      debugShowCheckedModeBanner: false,
+      themeMode: _themeMode,
+      theme: ThemeData(useMaterial3: true, brightness: Brightness.light, scaffoldBackgroundColor: const Color(0xFFE8E8ED), colorScheme: ColorScheme.fromSeed(brightness: Brightness.light, seedColor: const Color(0xFF005CFF))),
+      darkTheme: ThemeData(useMaterial3: true, brightness: Brightness.dark, scaffoldBackgroundColor: const Color(0xFF121212), colorScheme: ColorScheme.fromSeed(brightness: Brightness.dark, seedColor: const Color(0xFF005CFF))),
+      home: SplashScreen(toggleTheme: toggleTheme, isDarkMode: _themeMode == ThemeMode.dark),
+    );
   }
 }
 
@@ -368,16 +637,40 @@ class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key, required this.toggleTheme, required this.isDarkMode});
   @override State<SplashScreen> createState() => _SplashScreenState();
 }
+
 class _SplashScreenState extends State<SplashScreen> {
-  @override void initState() { super.initState(); _checkAuthAndNavigate(); }
+  @override
+  void initState() {
+    super.initState();
+    _checkAuthAndNavigate();
+  }
   Future<void> _checkAuthAndNavigate() async {
     await Future.delayed(const Duration(seconds: 2));
     if (!mounted) return;
-    if (SettingsManager.isAppLockEnabled) { Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => AppLockScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode))); } 
-    else { Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode))); }
+    if (SettingsManager.isAppLockEnabled) {
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => AppLockScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode)));
+    } else {
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode)));
+    }
   }
-  @override Widget build(BuildContext context) {
-    return Scaffold(body: Container(width: double.infinity, decoration: const BoxDecoration(gradient: LinearGradient(colors: [Color(0xFF005CFF), Color(0xFF00D2FF)], begin: Alignment.topLeft, end: Alignment.bottomRight)), child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [const Spacer(), Container(decoration: BoxDecoration(borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 15, offset: const Offset(0, 5))]), child: ClipRRect(borderRadius: BorderRadius.circular(20), child: Image.asset('app_icon.png', width: 100, height: 100, fit: BoxFit.contain, errorBuilder: (context, error, stackTrace) => const Icon(Icons.school, size: 80, color: Colors.white)))), const SizedBox(height: 24), const Text("Tutor's Desk", style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 1.5)), const SizedBox(height: 8), Text("Class & Batch Management System", style: TextStyle(fontSize: 14, color: Colors.white.withOpacity(0.9))), const SizedBox(height: 40), const CircularProgressIndicator(color: Colors.white), const Spacer(), const Text("Developed By", style: TextStyle(color: Colors.white70, fontSize: 12)), const SizedBox(height: 4), const Text("Jilaksan_K", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)), const SizedBox(height: 2), const Text("BSc (Dat Sc) {R} SUSL", style: TextStyle(color: Colors.white70, fontSize: 10)), const SizedBox(height: 30)])));
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        width: double.infinity, decoration: const BoxDecoration(gradient: LinearGradient(colors: [Color(0xFF005CFF), Color(0xFF00D2FF)], begin: Alignment.topLeft, end: Alignment.bottomRight)),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Spacer(),
+            Container(decoration: BoxDecoration(borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 15, offset: const Offset(0, 5))]), child: ClipRRect(borderRadius: BorderRadius.circular(20), child: Image.asset('app_icon.png', width: 100, height: 100, fit: BoxFit.contain, errorBuilder: (context, error, stackTrace) => const Icon(Icons.school, size: 80, color: Colors.white)))),
+            const SizedBox(height: 24), const Text("Tutor's Desk", style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 1.5)),
+            const SizedBox(height: 8), Text("Class & Batch Management System", style: TextStyle(fontSize: 14, color: Colors.white.withOpacity(0.9))),
+            const SizedBox(height: 40), const CircularProgressIndicator(color: Colors.white), const Spacer(),
+            const Text("Developed By", style: TextStyle(color: Colors.white70, fontSize: 12)), const SizedBox(height: 4), const Text("Jilaksan_K", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)), const SizedBox(height: 2), const Text("BSc (Dat Sc) {R} SUSL", style: TextStyle(color: Colors.white70, fontSize: 10)), const SizedBox(height: 30),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -387,38 +680,168 @@ class AppLockScreen extends StatefulWidget {
   const AppLockScreen({super.key, required this.toggleTheme, required this.isDarkMode, this.isFromResume = false});
   @override State<AppLockScreen> createState() => _AppLockScreenState();
 }
+
 class _AppLockScreenState extends State<AppLockScreen> {
-  final LocalAuthentication auth = LocalAuthentication(); bool _isAuthenticating = false;
-  @override void initState() {
-    super.initState(); _isLockScreenVisible = true; 
-    if (SettingsManager.useAppFace || SettingsManager.useAppFingerprint) { _authenticate(); } 
-    else if (SettingsManager.appPin != null) { WidgetsBinding.instance.addPostFrameCallback((_) => _showPinDialog()); } 
-    else { WidgetsBinding.instance.addPostFrameCallback((_) => _onUnlockSuccess()); }
+  final LocalAuthentication auth = LocalAuthentication();
+  bool _isAuthenticating = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _isLockScreenVisible = true; 
+    
+    if (SettingsManager.useAppFace || SettingsManager.useAppFingerprint) {
+      _authenticate();
+    } else if (SettingsManager.appPin != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _showPinDialog());
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _onUnlockSuccess());
+    }
   }
-  @override void dispose() { _isLockScreenVisible = false; super.dispose(); }
+
+  @override
+  void dispose() { _isLockScreenVisible = false; super.dispose(); }
+
   Future<void> _authenticate() async {
     bool authenticated = false;
-    try { setState(() { _isAuthenticating = true; }); if (await auth.canCheckBiometrics) { authenticated = await auth.authenticate(localizedReason: 'Authenticate to unlock', options: const AuthenticationOptions(stickyAuth: true, biometricOnly: true)); } } catch (e) { debugPrint("Auth Error: $e"); } finally { if (mounted) setState(() { _isAuthenticating = false; }); }
+    try {
+      setState(() { _isAuthenticating = true; });
+      if (await auth.canCheckBiometrics) {
+        authenticated = await auth.authenticate(localizedReason: 'Authenticate to unlock Tutor\'s Desk', options: const AuthenticationOptions(stickyAuth: true, biometricOnly: true));
+      }
+    } catch (e) { debugPrint("Auth Error: $e"); } 
+    finally { if (mounted) setState(() { _isAuthenticating = false; }); }
     if (authenticated) _onUnlockSuccess();
   }
-  void _onUnlockSuccess() { if (!mounted) return; if (widget.isFromResume) { Navigator.pop(context); } else { Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode))); } }
-  void _showPinDialog() { showDialog(context: context, barrierDismissible: false, builder: (context) => AlertDialog(title: const Text("Enter App PIN"), content: TextField(obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true, onSubmitted: (val) { if (val == SettingsManager.appPin) { Navigator.pop(context); _onUnlockSuccess(); } else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect PIN'))); } }))); }
-  @override Widget build(BuildContext context) {
-    bool isDark = Theme.of(context).brightness == Brightness.dark; bool onlyFace = SettingsManager.useAppFace && !SettingsManager.useAppFingerprint; IconData authIcon = onlyFace ? Icons.face : Icons.fingerprint;
-    return PopScope(canPop: false, child: Scaffold(body: SafeArea(child: Column(children: [Expanded(child: Center(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 24.0), child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.lock_outline, size: 80, color: isDark ? Colors.white : const Color(0xFF005CFF)), const SizedBox(height: 20), const Text("App Locked", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)), const SizedBox(height: 40), if (SettingsManager.useAppFace || SettingsManager.useAppFingerprint) SizedBox(width: double.infinity, height: 55, child: ElevatedButton.icon(icon: Icon(authIcon, size: 28), label: Text(_isAuthenticating ? 'Authenticating...' : 'Use Biometrics'), style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white), onPressed: _isAuthenticating ? null : _authenticate)), const SizedBox(height: 16), if (SettingsManager.appPin != null) SizedBox(width: double.infinity, height: 55, child: OutlinedButton.icon(icon: const Icon(Icons.pin), label: const Text('Use PIN'), style: OutlinedButton.styleFrom(foregroundColor: isDark ? Colors.white : const Color(0xFF005CFF)), onPressed: _showPinDialog))])))), const Text("Developed By", style: TextStyle(color: Colors.grey, fontSize: 12)), const SizedBox(height: 4), Text("Jilaksan_K", style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 16, fontWeight: FontWeight.bold)), const SizedBox(height: 2), const Text("BSc (Dat Sc) {R} SUSL", style: TextStyle(color: Colors.grey, fontSize: 10)), const SizedBox(height: 20)]))));
+
+  void _onUnlockSuccess() {
+    if (!mounted) return;
+    if (widget.isFromResume) { Navigator.pop(context); } 
+    else { Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => DashboardScreen(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode))); }
+  }
+
+  void _showPinDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text("Enter App PIN"),
+        content: TextField(
+          obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true,
+          onSubmitted: (val) {
+            if (val == SettingsManager.appPin) { Navigator.pop(context); _onUnlockSuccess(); } 
+            else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect PIN'))); }
+          },
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+    bool onlyFace = SettingsManager.useAppFace && !SettingsManager.useAppFingerprint;
+    IconData authIcon = onlyFace ? Icons.face : Icons.fingerprint;
+    String authLabel = onlyFace ? 'Use Face Recognition' : 'Use Biometrics';
+
+    return PopScope(
+      canPop: false, 
+      child: Scaffold(
+        body: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.lock_outline, size: 80, color: isDark ? Colors.white : const Color(0xFF005CFF)), const SizedBox(height: 20),
+                        const Text("App Locked", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)), const SizedBox(height: 40),
+                        if (SettingsManager.useAppFace || SettingsManager.useAppFingerprint)
+                          SizedBox(
+                            width: double.infinity, height: 55,
+                            child: ElevatedButton.icon(
+                              icon: Icon(authIcon, size: 28),
+                              label: Text(_isAuthenticating ? 'Authenticating...' : authLabel),
+                              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white),
+                              onPressed: _isAuthenticating ? null : _authenticate,
+                            ),
+                          ),
+                        const SizedBox(height: 16),
+                        if (SettingsManager.appPin != null)
+                          SizedBox(
+                            width: double.infinity, height: 55,
+                            child: OutlinedButton.icon(
+                              icon: const Icon(Icons.pin), label: const Text('Use PIN'),
+                              style: OutlinedButton.styleFrom(foregroundColor: isDark ? Colors.white : const Color(0xFF005CFF)), onPressed: _showPinDialog,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const Text("Developed By", style: TextStyle(color: Colors.grey, fontSize: 12)),
+              const SizedBox(height: 4),
+              Text("Jilaksan_K", style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 16, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 2),
+              const Text("BSc (Dat Sc) {R} SUSL", style: TextStyle(color: Colors.grey, fontSize: 10)),
+              const SizedBox(height: 20),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
-// --- SETTINGS ---
+// --- 3. SETTINGS VAULT & ADMIN PIN GATEWAY ---
 class AdminGateway {
   static void openSettings(BuildContext context, VoidCallback toggleTheme, bool isDarkMode) {
     if (SettingsManager.adminPin == null) {
-      TextEditingController pinCtrl = TextEditingController();
-      showDialog(context: context, barrierDismissible: false, builder: (context) => AlertDialog(title: const Text("Set Admin PIN"), content: TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true, decoration: const InputDecoration(labelText: 'Enter 6-digit PIN')), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")), ElevatedButton(onPressed: () { if (pinCtrl.text.length == 6) { SettingsManager.adminPin = pinCtrl.text; Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => SettingsScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode))); } }, child: const Text("Save"))]));
+      _showPinSetupDialog(context, toggleTheme, isDarkMode);
     } else {
-      TextEditingController pinCtrl = TextEditingController();
-      showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Enter Admin PIN"), content: TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true, onSubmitted: (val) { if (val == SettingsManager.adminPin) { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => SettingsScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode))); } else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect PIN!'), backgroundColor: Colors.red)); } })));
+      _showPinEntryDialog(context, toggleTheme, isDarkMode);
     }
+  }
+  static void _showPinSetupDialog(BuildContext context, VoidCallback toggleTheme, bool isDarkMode) {
+    TextEditingController pinCtrl = TextEditingController();
+    showDialog(
+      context: context, barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text("Set Admin PIN"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text("This PIN is required to access Settings, delete classes, and manage batches.", style: TextStyle(fontSize: 13, color: Colors.grey)), const SizedBox(height: 15),
+            TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true, decoration: const InputDecoration(labelText: 'Enter 6-digit PIN', border: OutlineInputBorder())),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(onPressed: () { if (pinCtrl.text.length == 6) { SettingsManager.adminPin = pinCtrl.text; Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => SettingsScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode))); } }, child: const Text("Save & Continue"))
+        ],
+      ),
+    );
+  }
+  static void _showPinEntryDialog(BuildContext context, VoidCallback toggleTheme, bool isDarkMode) {
+    TextEditingController pinCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Enter Admin PIN"),
+        content: TextField(
+          controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true,
+          decoration: const InputDecoration(labelText: 'Admin PIN required (6 Digits)', border: OutlineInputBorder()),
+          onSubmitted: (val) {
+            if (val == SettingsManager.adminPin) { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (context) => SettingsScreen(toggleTheme: toggleTheme, isDarkMode: isDarkMode))); } 
+            else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Incorrect Admin PIN!', style: TextStyle(color: Colors.white)), backgroundColor: Colors.red)); }
+          },
+        ),
+      ),
+    );
   }
 }
 
@@ -427,272 +850,994 @@ class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key, required this.toggleTheme, required this.isDarkMode});
   @override State<SettingsScreen> createState() => _SettingsScreenState();
 }
+
 class _SettingsScreenState extends State<SettingsScreen> {
-  Future<void> _authAndAction(Function action) async { bool isAuth = await SecurityGateway.verifySettingsModification(context); if (isAuth) { action(); setState(() {}); } else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authentication failed!'))); } }
-  void _showSetAppPinDialog({VoidCallback? onSuccess}) { TextEditingController pinCtrl = TextEditingController(); showDialog(context: context, barrierDismissible: false, builder: (context) => AlertDialog(title: const Text("Set App PIN"), content: TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true, decoration: const InputDecoration(labelText: '6-digit App PIN')), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")), ElevatedButton(onPressed: () { if (pinCtrl.text.length == 6) { SettingsManager.appPin = pinCtrl.text; Navigator.pop(context); if (onSuccess != null) onSuccess(); setState(() {}); } }, child: const Text("Save"))])); }
-  @override Widget build(BuildContext context) {
+  
+  Future<void> _authAndAction(Function action) async {
+    bool isAuth = await SecurityGateway.verifySettingsModification(context);
+    if (isAuth) { action(); setState(() {}); } 
+    else { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Authentication failed!'), backgroundColor: Colors.red)); }
+  }
+
+  void _showAndroidBiometricNotice() {
+    showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Android Security Notice"), content: const Text("Android OS automatically uses your phone's default primary biometric (usually Fingerprint). Even if you select Face Lock here, your phone might still prompt for Fingerprint first depending on your device settings."), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("I Understand"))]));
+  }
+
+  void _showSetAppPinDialog({VoidCallback? onSuccess}) {
+    TextEditingController pinCtrl = TextEditingController();
+    showDialog(
+      context: context, 
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text("Set App PIN"), 
+        content: TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true, decoration: const InputDecoration(labelText: 'Enter 6-digit App PIN', border: OutlineInputBorder())),
+        actions: [
+          TextButton(onPressed: () { Navigator.pop(context); }, child: const Text("Cancel")), 
+          ElevatedButton(onPressed: () { 
+            if (pinCtrl.text.length == 6) { 
+              SettingsManager.appPin = pinCtrl.text; 
+              Navigator.pop(context); 
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('App PIN Updated!'))); 
+              if (onSuccess != null) onSuccess();
+              setState(() {}); 
+            } 
+          }, child: const Text("Save PIN"))
+        ]
+      )
+    );
+  }
+
+  void _showChangeAdminPinDialog() {
+    TextEditingController pinCtrl = TextEditingController();
+    showDialog(
+      context: context, builder: (context) => AlertDialog(
+        title: const Text("Change Admin PIN"), 
+        content: TextField(controller: pinCtrl, obscureText: true, keyboardType: TextInputType.number, maxLength: 6, autofocus: true, decoration: const InputDecoration(labelText: 'Enter New 6-digit PIN', border: OutlineInputBorder())),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")), 
+          ElevatedButton(onPressed: () { 
+            if (pinCtrl.text.length == 6) { 
+              SettingsManager.adminPin = pinCtrl.text; 
+              Navigator.pop(context); 
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Admin PIN Successfully Changed!'))); 
+              setState(() {}); 
+            } 
+          }, child: const Text("Save New PIN"))
+        ]
+      )
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text("Settings Vault"), centerTitle: true),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          SwitchListTile(title: const Text("Enable App Lock", style: TextStyle(fontWeight: FontWeight.bold)), value: SettingsManager.isAppLockEnabled, activeColor: const Color(0xFF005CFF), onChanged: (val) => _authAndAction(() { if (val && SettingsManager.appPin == null) { _showSetAppPinDialog(onSuccess: () { SettingsManager.isAppLockEnabled = true; setState(() {}); }); } else { SettingsManager.isAppLockEnabled = val; setState(() {}); } })),
-          if (SettingsManager.isAppLockEnabled) ...[CheckboxListTile(title: const Text("Fingerprint"), value: SettingsManager.useAppFingerprint, onChanged: (val) => _authAndAction(() { SettingsManager.useAppFingerprint = val!; })), CheckboxListTile(title: const Text("Face Recognition"), value: SettingsManager.useAppFace, onChanged: (val) => _authAndAction(() { SettingsManager.useAppFace = val!; })), ListTile(title: const Text("Change App PIN"), trailing: const Icon(Icons.pin), onTap: () => _authAndAction(() { _showSetAppPinDialog(); }))],
-          const Divider(),
-          SwitchListTile(title: const Text("Enable Timetable Feature", style: TextStyle(fontWeight: FontWeight.bold)), subtitle: const Text("Manage class schedules & check conflicts"), value: SettingsManager.isTimetableEnabled, activeColor: const Color(0xFF005CFF), onChanged: (val) => _authAndAction(() { SettingsManager.isTimetableEnabled = val; })),
-          const Divider(),
-          ListTile(leading: const Icon(Icons.folder_delete, color: Colors.orange), title: const Text("Manage / Delete Batches"), trailing: const Icon(Icons.arrow_forward_ios, size: 16), onTap: () => _authAndAction(() { Navigator.push(context, MaterialPageRoute(builder: (context) => const BatchManagementScreen())); })),
+          _buildSectionHeader("Settings Security"),
+          ListTile(title: const Text("Settings Modification Auth"), subtitle: Text("Currently: ${SettingsManager.settingsBiometric.toUpperCase()}"), trailing: const Icon(Icons.shield, color: Colors.blue), onTap: () => _authAndAction(() { SettingsManager.settingsBiometric = SettingsManager.settingsBiometric == 'fingerprint' ? 'face' : 'fingerprint'; _showAndroidBiometricNotice(); })),
+          const Divider(height: 40),
+          _buildSectionHeader("Features Management"),
+          SwitchListTile(
+            title: const Text("Enable Timetable Feature", style: TextStyle(fontWeight: FontWeight.bold)),
+            subtitle: const Text("Manage batch specific timetables"),
+            value: SettingsManager.isTimetableEnabled,
+            activeColor: const Color(0xFF005CFF),
+            onChanged: (val) => _authAndAction(() {
+              SettingsManager.isTimetableEnabled = val;
+              setState(() {});
+            })
+          ),
+          const Divider(height: 40),
+          _buildSectionHeader("App Opening Lock"),
+          SwitchListTile(
+            title: const Text("Enable App Lock", style: TextStyle(fontWeight: FontWeight.bold)), 
+            subtitle: const Text("Require auth when opening app"), 
+            value: SettingsManager.isAppLockEnabled, 
+            activeColor: const Color(0xFF005CFF), 
+            onChanged: (val) => _authAndAction(() { 
+              if (val && SettingsManager.appPin == null) {
+                _showSetAppPinDialog(onSuccess: () {
+                  SettingsManager.isAppLockEnabled = true;
+                  setState(() {});
+                });
+              } else {
+                SettingsManager.isAppLockEnabled = val; 
+                setState(() {});
+              }
+            })
+          ),
+          if (SettingsManager.isAppLockEnabled) ...[
+            CheckboxListTile(title: const Text("Fingerprint"), value: SettingsManager.useAppFingerprint, onChanged: (val) => _authAndAction(() { SettingsManager.useAppFingerprint = val!; if(val) _showAndroidBiometricNotice(); })),
+            CheckboxListTile(title: const Text("Face Recognition"), value: SettingsManager.useAppFace, onChanged: (val) => _authAndAction(() { SettingsManager.useAppFace = val!; if(val) _showAndroidBiometricNotice(); })),
+            ListTile(title: const Text("Change App PIN"), subtitle: const Text("Required fallback if biometrics fail"), trailing: const Icon(Icons.pin), onTap: () => _authAndAction(() { _showSetAppPinDialog(); })),
+          ],
+          const Divider(height: 40),
+          _buildSectionHeader("Class Deletion Security"),
+          ListTile(title: const Text("Change Admin PIN"), subtitle: const Text("Update your admin security PIN"), trailing: const Icon(Icons.password, color: Colors.red), onTap: () => _authAndAction(() { _showChangeAdminPinDialog(); })),
+          ListTile(title: const Text("Secondary Authentication"), subtitle: Text("Currently: ${SettingsManager.classDeleteBiometric.toUpperCase()}"), trailing: const Icon(Icons.edit), onTap: () => _authAndAction(() { SettingsManager.classDeleteBiometric = SettingsManager.classDeleteBiometric == 'fingerprint' ? 'face' : 'fingerprint'; _showAndroidBiometricNotice(); })),
+          const Divider(height: 40),
+          _buildSectionHeader("Batch Management"),
+          ListTile(leading: const Icon(Icons.folder_delete, color: Colors.orange), title: const Text("Manage / Delete Batches"), subtitle: const Text("Secure batch management zone"), trailing: const Icon(Icons.arrow_forward_ios, size: 16), onTap: () => _authAndAction(() { Navigator.push(context, MaterialPageRoute(builder: (context) => const BatchManagementScreen())); })),
         ],
       ),
     );
   }
+  Widget _buildSectionHeader(String title) { return Padding(padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0), child: Text(title, style: const TextStyle(color: Color(0xFF005CFF), fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 1.2))); }
 }
 
-class BatchManagementScreen extends StatefulWidget { const BatchManagementScreen({super.key}); @override State<BatchManagementScreen> createState() => _BatchManagementScreenState(); }
+// --- BATCH MANAGEMENT SCREEN ---
+class BatchManagementScreen extends StatefulWidget {
+  const BatchManagementScreen({super.key});
+  @override State<BatchManagementScreen> createState() => _BatchManagementScreenState();
+}
+
 class _BatchManagementScreenState extends State<BatchManagementScreen> {
-  @override Widget build(BuildContext context) {
-    return Scaffold(appBar: AppBar(title: const Text("Batch Management")), body: AppData.batches.isEmpty ? const Center(child: Text("No Batches Found.")) : ListView.builder(itemCount: AppData.batches.length, itemBuilder: (context, index) { final batch = AppData.batches[index]; return Card(margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: ListTile(title: Text(batch['batchName'], style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text("Total Classes: ${batch['totalClasses']}"), trailing: IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () async { bool isAuth = await SecurityGateway.verifySettingsModification(context); if (isAuth) { await DatabaseHelper.instance.insertBatchRemoval({'batchName': batch['batchName'], 'totalClasses': batch['totalClasses'], 'deletedOn': DateTime.now().toIso8601String()}); await DatabaseHelper.instance.deleteBatch(batch['id']); setState(() { AppData.batches.removeAt(index); }); } }))); }));
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Batch Management"), 
+        backgroundColor: Colors.red.withOpacity(0.1),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history, color: Colors.red),
+            tooltip: 'Batch Removal History',
+            onPressed: () {
+              Navigator.push(context, MaterialPageRoute(builder: (context) => const BatchRemovalHistoryScreen()));
+            },
+          )
+        ],
+      ),
+      body: AppData.batches.isEmpty 
+        ? const Center(child: Text("No Batches Found."))
+        : ListView.builder(
+            itemCount: AppData.batches.length,
+            itemBuilder: (context, index) {
+              final batch = AppData.batches[index];
+              return Card(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: ListTile(
+                  title: Text(batch['batchName'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text("Total Classes: ${batch['totalClasses']}"),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: () async {
+                      bool isAuth = await SecurityGateway.verifySettingsModification(context);
+                      if (isAuth) {
+                        if(batch['id'] != null){
+                          String deletedOn = '${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}';
+                          await DatabaseHelper.instance.insertBatchRemoval({
+                            'batchName': batch['batchName'],
+                            'totalClasses': batch['totalClasses'],
+                            'deletedOn': deletedOn
+                          });
+                          await DatabaseHelper.instance.deleteBatch(batch['id']);
+                        }
+                        setState(() { AppData.batches.removeAt(index); });
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Batch Deleted & Logged Successfully')));
+                      }
+                    },
+                  ),
+                ),
+              );
+            },
+          ),
+    );
   }
 }
 
-// --- SEARCH ---
+// --- BATCH REMOVAL HISTORY SCREEN ---
+class BatchRemovalHistoryScreen extends StatefulWidget {
+  const BatchRemovalHistoryScreen({super.key});
+  @override State<BatchRemovalHistoryScreen> createState() => _BatchRemovalHistoryScreenState();
+}
+
+class _BatchRemovalHistoryScreenState extends State<BatchRemovalHistoryScreen> {
+  List<Map<String, dynamic>> _deletedBatches = [];
+
+  @override void initState() { super.initState(); _fetchDeletedBatches(); }
+  Future<void> _fetchDeletedBatches() async {
+    final data = await DatabaseHelper.instance.fetchBatchRemovalHistory();
+    setState(() { _deletedBatches = data; });
+  }
+
+  @override Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Deleted Batches History'), backgroundColor: Colors.red.withOpacity(0.1)),
+      body: _deletedBatches.isEmpty
+        ? const Center(child: Text("No batches have been deleted."))
+        : ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: _deletedBatches.length,
+            itemBuilder: (context, index) {
+              var batch = _deletedBatches[index];
+              return Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                shape: RoundedRectangleBorder(side: const BorderSide(color: Colors.red, width: 0.5), borderRadius: BorderRadius.circular(12)),
+                child: ListTile(
+                  leading: const Icon(Icons.folder_delete, color: Colors.red, size: 30),
+                  title: Text(batch['batchName'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  subtitle: Text('Classes contained: ${batch['totalClasses']}\nDeleted On: ${batch['deletedOn']}'),
+                ),
+              );
+            },
+          ),
+    );
+  }
+}
+
+// --- SEARCH DELEGATE ---
 class AppSearchDelegate extends SearchDelegate {
-  @override List<Widget>? buildActions(BuildContext context) => [IconButton(icon: const Icon(Icons.clear), onPressed: () => query = '')];
-  @override Widget? buildLeading(BuildContext context) => IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => close(context, null));
-  @override Widget buildResults(BuildContext context) => _buildSearchResults(context);
-  @override Widget buildSuggestions(BuildContext context) => _buildSearchResults(context);
+  final BuildContext parentContext;
+  AppSearchDelegate(this.parentContext);
+
+  @override
+  List<Widget>? buildActions(BuildContext context) => [IconButton(icon: const Icon(Icons.clear), onPressed: () => query = '')];
+  @override
+  Widget? buildLeading(BuildContext context) => IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => close(context, null));
+  @override
+  Widget buildResults(BuildContext context) => _buildSearchResults(context);
+  @override
+  Widget buildSuggestions(BuildContext context) => _buildSearchResults(context);
 
   Widget _buildSearchResults(BuildContext context) {
     if (query.isEmpty) return const Center(child: Text('Search by subject, batch, or date...'));
+    
     return FutureBuilder<List<Map<String, dynamic>>>(
       future: DatabaseHelper.instance.searchClasses(query),
       builder: (context, snapshot) {
         if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
         final results = snapshot.data!;
         if (results.isEmpty) return const Center(child: Text('No matching classes found.'));
-        return ListView.builder(itemCount: results.length, itemBuilder: (context, index) {
-          final cls = results[index];
-          return ListTile(leading: const Icon(Icons.search, color: Colors.blue), title: Text(cls['subject'], style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Batch: ${cls['batchName']} • Date: ${cls['date']}'), onTap: () {
-            // Find batch map to navigate
-            var batchMap = AppData.batches.firstWhere((b) => b['id'] == cls['batchId'], orElse: () => {});
-            if(batchMap.isNotEmpty) Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => BatchDetailsScreen(batch: batchMap)));
-          });
-        });
+        
+        return ListView.builder(
+          itemCount: results.length,
+          itemBuilder: (context, index) {
+            final cls = results[index];
+            return ListTile(
+              leading: const Icon(Icons.search, color: Colors.blue),
+              title: Text(cls['subject'], style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text('Batch: ${cls['batchName']} • Set ${cls['setNumber']} • Class ${cls['classNum']}\nDate: ${cls['date']}'),
+              onTap: () async {
+                final batches = await DatabaseHelper.instance.fetchAllBatches();
+                final batch = batches.firstWhere((b) => b['id'] == cls['batchId']);
+                close(context, null);
+                Navigator.push(parentContext, MaterialPageRoute(builder: (context) => BatchDetailsScreen(batch: batch)));
+              },
+            );
+          },
+        );
       }
     );
   }
 }
 
-// --- 4. DASHBOARD ---
+// --- TIMETABLE MANAGEMENT SCREEN ---
+class TimetableManagementScreen extends StatefulWidget {
+  final Map<String, dynamic> batch;
+  final bool isInitialSetup;
+  const TimetableManagementScreen({super.key, required this.batch, this.isInitialSetup = false});
+  @override State<TimetableManagementScreen> createState() => _TimetableManagementScreenState();
+}
+
+class _TimetableManagementScreenState extends State<TimetableManagementScreen> {
+  List<Map<String, dynamic>> _timetables = [];
+  final List<String> _days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  String _selectedDay = 'Monday';
+  TimeOfDay? _startTime;
+  TimeOfDay? _endTime;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTimetables();
+  }
+
+  Future<void> _loadTimetables() async {
+    final data = await DatabaseHelper.instance.fetchTimetablesForBatch(widget.batch['id']);
+    setState(() { _timetables = data; });
+  }
+
+  Future<void> _selectTime(BuildContext context, bool isStart) async {
+    final TimeOfDay? picked = await showTimePicker(context: context, initialTime: TimeOfDay.now());
+    if (picked != null) {
+      setState(() {
+        if (isStart) _startTime = picked;
+        else _endTime = picked;
+      });
+    }
+  }
+
+  int _timeToMinutes(TimeOfDay time) {
+    return time.hour * 60 + time.minute;
+  }
+
+  Future<bool> _checkForClash(String day, TimeOfDay start, TimeOfDay end) async {
+    final allTts = await DatabaseHelper.instance.fetchAllTimetables();
+    int newStartMin = _timeToMinutes(start);
+    int newEndMin = _timeToMinutes(end);
+
+    for (var tt in allTts) {
+      if (tt['day'] == day) {
+        if (tt['batchId'] == widget.batch['id']) continue; 
+
+        var startParts = tt['startTime'].split(':');
+        var endParts = tt['endTime'].split(':');
+        int existingStart = int.parse(startParts[0]) * 60 + int.parse(startParts[1]);
+        int existingEnd = int.parse(endParts[0]) * 60 + int.parse(endParts[1]);
+
+        if (newStartMin < existingEnd && existingStart < newEndMin) {
+          return true; // Clash found
+        }
+      }
+    }
+    return false;
+  }
+
+  Future<void> _addTimetableEntry() async {
+    if (_startTime == null || _endTime == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select both start and end times.')));
+      return;
+    }
+    if (_timeToMinutes(_startTime!) >= _timeToMinutes(_endTime!)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End time must be after start time.')));
+      return;
+    }
+
+    bool clash = await _checkForClash(_selectedDay, _startTime!, _endTime!);
+    if (clash) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Time clash detected with another batch!'), backgroundColor: Colors.red));
+      return;
+    }
+
+    String startStr = '${_startTime!.hour.toString().padLeft(2,'0')}:${_startTime!.minute.toString().padLeft(2,'0')}';
+    String endStr = '${_endTime!.hour.toString().padLeft(2,'0')}:${_endTime!.minute.toString().padLeft(2,'0')}';
+
+    await DatabaseHelper.instance.insertTimetable({
+      'batchId': widget.batch['id'],
+      'day': _selectedDay,
+      'startTime': startStr,
+      'endTime': endStr
+    });
+    
+    setState(() {
+      _startTime = null;
+      _endTime = null;
+    });
+    await _loadTimetables();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Timetable entry added successfully.')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('${widget.batch['batchName']} Timetable')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Add New Slot', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 10),
+                    DropdownButtonFormField<String>(
+                      value: _selectedDay,
+                      decoration: const InputDecoration(labelText: 'Select Day'),
+                      items: _days.map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
+                      onChanged: (val) { setState(() { _selectedDay = val!; }); },
+                    ),
+                    const SizedBox(height: 15),
+                    Row(
+                      children: [
+                        Expanded(child: ElevatedButton(onPressed: () => _selectTime(context, true), child: Text(_startTime == null ? 'Start Time' : _startTime!.format(context)))),
+                        const SizedBox(width: 10),
+                        Expanded(child: ElevatedButton(onPressed: () => _selectTime(context, false), child: Text(_endTime == null ? 'End Time' : _endTime!.format(context)))),
+                      ],
+                    ),
+                    const SizedBox(height: 15),
+                    SizedBox(width: double.infinity, child: ElevatedButton(onPressed: _addTimetableEntry, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white), child: const Text('Add Slot'))),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Expanded(
+              child: _timetables.isEmpty 
+              ? const Center(child: Text("No timetable slots assigned yet."))
+              : ListView.builder(
+                  itemCount: _timetables.length,
+                  itemBuilder: (context, index) {
+                    var tt = _timetables[index];
+                    return Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.schedule, color: Colors.blue),
+                        title: Text('${tt['day']}'),
+                        subtitle: Text('${tt['startTime']} - ${tt['endTime']}'),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          onPressed: () async {
+                            await DatabaseHelper.instance.deleteTimetable(tt['id']);
+                            await _loadTimetables();
+                          },
+                        ),
+                      ),
+                    );
+                  },
+                ),
+            )
+          ],
+        ),
+      ),
+      floatingActionButton: widget.isInitialSetup && _timetables.isNotEmpty 
+          ? FloatingActionButton.extended(onPressed: () => Navigator.pop(context, true), icon: const Icon(Icons.check), label: const Text('Done')) 
+          : null,
+    );
+  }
+}
+
+
+// --- 4. DASHBOARD & OTHER SCREENS ---
 class DashboardScreen extends StatefulWidget {
   final VoidCallback toggleTheme; final bool isDarkMode;
   const DashboardScreen({super.key, required this.toggleTheme, required this.isDarkMode});
   @override State<DashboardScreen> createState() => _DashboardScreenState();
 }
+
 class _DashboardScreenState extends State<DashboardScreen> {
-  void _refreshDashboard() { DatabaseHelper.instance.fetchAllBatches().then((data) { setState(() { AppData.batches = data; }); }); }
-  void _exportAllPDF() async {
-    bool includeDeleted = await _askIncludeDeletedDialog();
-    AdvancedPdfService.generateAdvancedReport(context, null, includeDeleted);
+  void _refreshDashboard() {
+    DatabaseHelper.instance.fetchAllBatches().then((data) {
+      setState(() { AppData.batches = data; });
+    });
   }
-  Future<bool> _askIncludeDeletedDialog() async {
-    bool result = false;
-    await showDialog(context: context, builder: (context) => AlertDialog(title: const Text('Export PDF'), content: const Text('Do you want to include the deleted classes history?'), actions: [TextButton(onPressed: () { result = false; Navigator.pop(context); }, child: const Text('No')), ElevatedButton(onPressed: () { result = true; Navigator.pop(context); }, child: const Text('Yes'))]));
-    return result;
-  }
-  @override Widget build(BuildContext context) {
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Tutor's Desk", style: TextStyle(fontWeight: FontWeight.bold)), centerTitle: true, actions: [IconButton(icon: const Icon(Icons.picture_as_pdf, color: Colors.red), tooltip: 'Export All Timetables', onPressed: _exportAllPDF), IconButton(icon: const Icon(Icons.search), onPressed: () => showSearch(context: context, delegate: AppSearchDelegate())), IconButton(icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode), onPressed: widget.toggleTheme)]),
+      appBar: AppBar(
+        title: const Text("Tutor's Desk", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+        centerTitle: true, backgroundColor: Colors.transparent, elevation: 0,
+        actions: [
+          IconButton(icon: const Icon(Icons.search), onPressed: () => showSearch(context: context, delegate: AppSearchDelegate(context))),
+          IconButton(icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode), onPressed: widget.toggleTheme)
+        ],
+      ),
       drawer: DeveloperProfileDrawer(toggleTheme: widget.toggleTheme, isDarkMode: widget.isDarkMode, onSettingsClosed: () => setState((){})),
-      body: AppData.batches.isEmpty ? const Center(child: Text("No Batches Yet. Create your first batch!")) : ListView.builder(padding: const EdgeInsets.all(16.0), itemCount: AppData.batches.length, itemBuilder: (context, index) { return Padding(padding: const EdgeInsets.only(bottom: 16.0), child: BatchCard(batchData: AppData.batches[index], onReturn: _refreshDashboard)); }),
-      floatingActionButton: FloatingActionButton.extended(onPressed: () async {
-        final newBatch = await Navigator.push(context, MaterialPageRoute(builder: (context) => const CreateBatchScreen()));
-        if (newBatch != null) {
-          Map<String, dynamic> batchData = { 'batchName': newBatch['batchName'], 'currentSet': 'Set 01', 'progress': '0 / ${newBatch['classLimit']} Classes', 'completedSets': '0', 'totalClasses': '0', 'feeStatus': '✓ Fee Collected', 'isFeeReminder': false, 'classLimit': int.parse(newBatch['classLimit'].toString()), 'currentSetNumber': 1, 'completedClasses': 0, 'createdAt': DateTime.now().toIso8601String() };
-          int id = await DatabaseHelper.instance.insertBatch(batchData); batchData['id'] = id; setState(() { AppData.batches.add(batchData); });
-        }
-      }, icon: const Icon(Icons.add), label: const Text('Create Batch', style: TextStyle(fontWeight: FontWeight.bold))),
+      body: AppData.batches.isEmpty 
+        ? const Center(child: Text("No Batches Yet. Create your first batch!"))
+        : ListView.builder(
+            padding: const EdgeInsets.all(16.0),
+            itemCount: AppData.batches.length,
+            itemBuilder: (context, index) {
+              final batch = AppData.batches[index];
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 16.0),
+                child: BatchCard(
+                  batchData: batch,
+                  onReturn: _refreshDashboard, 
+                ),
+              );
+            },
+          ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () async {
+          final newBatch = await Navigator.push(context, MaterialPageRoute(builder: (context) => const CreateBatchScreen()));
+          if (newBatch != null) {
+            Map<String, dynamic> batchData = {
+              'batchName': newBatch['batchName'],
+              'currentSet': 'Set 01',
+              'progress': '0 / ${newBatch['classLimit']} Classes',
+              'completedSets': '0',
+              'totalClasses': '0',
+              'feeStatus': '✓ Fee Collected',
+              'isFeeReminder': false,
+              'classLimit': int.parse(newBatch['classLimit'].toString()),
+              'currentSetNumber': 1,
+              'completedClasses': 0,
+              'createdDate': DateTime.now().toString()
+            };
+            
+            int id = await DatabaseHelper.instance.insertBatch(batchData);
+            batchData['id'] = id;
+            setState(() { AppData.batches.add(batchData); });
+          }
+        },
+        icon: const Icon(Icons.add), label: const Text('Create Batch', style: TextStyle(fontWeight: FontWeight.bold)),
+      ),
     );
   }
 }
 
 class BatchCard extends StatelessWidget {
-  final Map<String, dynamic> batchData; final VoidCallback onReturn;
+  final Map<String, dynamic> batchData;
+  final VoidCallback onReturn;
   const BatchCard({super.key, required this.batchData, required this.onReturn});
+  
   @override Widget build(BuildContext context) {
-    bool isDark = Theme.of(context).brightness == Brightness.dark; bool isFeeReminder = batchData['isFeeReminder'] == true;
-    return Card(elevation: isDark ? 2 : 12, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)), child: InkWell(borderRadius: BorderRadius.circular(24), onTap: () { Navigator.push(context, MaterialPageRoute(builder: (context) => BatchDetailsScreen(batch: batchData))).then((_) => onReturn()); }, child: Padding(padding: const EdgeInsets.all(20.0), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(batchData['batchName'], style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)), const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey)]), const Divider(height: 30), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Current Set', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)), Text(batchData['currentSet'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))]), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Progress', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)), Text(batchData['progress'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))])]), const SizedBox(height: 20), Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), decoration: BoxDecoration(color: isFeeReminder ? Colors.red.withOpacity(0.1) : Colors.green.withOpacity(0.1), borderRadius: BorderRadius.circular(12)), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(isFeeReminder ? Icons.warning_amber_rounded : Icons.check_circle, color: isFeeReminder ? Colors.red : Colors.green, size: 20), const SizedBox(width: 8), Text(batchData['feeStatus'], style: TextStyle(color: isFeeReminder ? Colors.red : Colors.green, fontWeight: FontWeight.bold))]))]))));
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+    bool isFeeReminder = batchData['isFeeReminder'] == true;
+
+    return Card(
+      elevation: isDark ? 2 : 12, shadowColor: isDark ? Colors.black54 : Colors.black26, color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24), side: BorderSide(color: isDark ? Colors.grey.shade800 : Colors.white, width: 1.5)),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(24),
+        onTap: () {
+          Navigator.push(context, MaterialPageRoute(builder: (context) => BatchDetailsScreen(batch: batchData))).then((_) => onReturn());
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(batchData['batchName'], style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)), const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey)]), const Divider(height: 30),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildStatColumn('Current Set', batchData['currentSet'], isDark), _buildStatColumn('Progress', batchData['progress'], isDark)]), const SizedBox(height: 20),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_buildStatColumn('Completed Sets', batchData['completedSets'], isDark), _buildStatColumn('Total Classes', batchData['totalClasses'], isDark)]), const SizedBox(height: 20),
+              Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), decoration: BoxDecoration(color: isFeeReminder ? (isDark ? Colors.red.shade900.withOpacity(0.3) : Colors.red.shade50) : (isDark ? Colors.green.shade900.withOpacity(0.3) : Colors.green.shade50), borderRadius: BorderRadius.circular(12), border: Border.all(color: isFeeReminder ? (isDark ? Colors.red.shade800 : Colors.red.shade100) : (isDark ? Colors.green.shade800 : Colors.green.shade100))), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(isFeeReminder ? Icons.warning_amber_rounded : Icons.check_circle, color: isFeeReminder ? (isDark ? Colors.red.shade300 : Colors.red) : (isDark ? Colors.green.shade300 : Colors.green), size: 20), const SizedBox(width: 8), Text(batchData['feeStatus'], style: TextStyle(color: isFeeReminder ? (isDark ? Colors.red.shade200 : Colors.red.shade700) : (isDark ? Colors.green.shade200 : Colors.green.shade700), fontWeight: FontWeight.w600))]))
+            ],
+          ),
+        ),
+      ),
+    );
   }
+  Widget _buildStatColumn(String label, String value, bool isDark) { return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(label, style: TextStyle(color: isDark ? Colors.grey.shade400 : Colors.grey.shade600, fontSize: 12)), const SizedBox(height: 4), Text(value, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16))]); }
 }
 
 // --- BATCH DETAILS SCREEN ---
 class BatchDetailsScreen extends StatefulWidget {
-  final Map<String, dynamic> batch; const BatchDetailsScreen({super.key, required this.batch});
+  final Map<String, dynamic> batch;
+  const BatchDetailsScreen({super.key, required this.batch});
   @override State<BatchDetailsScreen> createState() => _BatchDetailsScreenState();
 }
 class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
-  late int currentSetNumber; late int completedClasses; late int classLimit; bool isFeePaid = false; List<Map<String, dynamic>> classHistory = [];
-  @override void initState() { super.initState(); currentSetNumber = widget.batch['currentSetNumber']; completedClasses = widget.batch['completedClasses']; classLimit = widget.batch['classLimit']; int remaining = classLimit - completedClasses; if (remaining <= 3 && completedClasses < classLimit) { isFeePaid = (widget.batch['feeStatus'] == '✓ Fee Collected'); } else { isFeePaid = false; } _loadClasses(); }
-  Future<void> _loadClasses() async { final classes = await DatabaseHelper.instance.fetchClassesForBatch(widget.batch['id'], currentSetNumber); setState(() { classHistory = classes; }); }
-  Future<void> _updateBatchState() async { widget.batch['currentSetNumber'] = currentSetNumber; widget.batch['completedClasses'] = completedClasses; widget.batch['currentSet'] = 'Set ${currentSetNumber.toString().padLeft(2, '0')}'; widget.batch['progress'] = '$completedClasses / $classLimit Classes'; int remaining = classLimit - completedClasses; if (remaining <= 3 && completedClasses < classLimit) { if (!isFeePaid) { widget.batch['isFeeReminder'] = true; widget.batch['feeStatus'] = '⚠ Fee Reminder'; } else { widget.batch['isFeeReminder'] = false; widget.batch['feeStatus'] = '✓ Fee Collected'; } } else { isFeePaid = false; widget.batch['isFeeReminder'] = false; widget.batch['feeStatus'] = '✓ Fee Collected'; } await DatabaseHelper.instance.updateBatch(widget.batch); }
+  late int currentSetNumber; 
+  late int completedClasses; 
+  late int classLimit;
+  bool isFeePaid = false; 
+  List<Map<String, dynamic>> classHistory = [];
+
+  @override
+  void initState() {
+    super.initState();
+    currentSetNumber = widget.batch['currentSetNumber'];
+    completedClasses = widget.batch['completedClasses'];
+    classLimit = widget.batch['classLimit'];
+    
+    int remaining = classLimit - completedClasses;
+    if (remaining <= 3 && completedClasses < classLimit) {
+       isFeePaid = (widget.batch['feeStatus'] == '✓ Fee Collected');
+    } else {
+       isFeePaid = false;
+    }
+    
+    _loadClasses();
+  }
+
+  Future<void> _loadClasses() async {
+    final classes = await DatabaseHelper.instance.fetchClassesForBatch(widget.batch['id'], currentSetNumber);
+    setState(() { classHistory = classes; });
+  }
+
+  Future<void> _updateBatchState() async {
+    widget.batch['currentSetNumber'] = currentSetNumber;
+    widget.batch['completedClasses'] = completedClasses;
+    widget.batch['currentSet'] = 'Set ${currentSetNumber.toString().padLeft(2, '0')}';
+    widget.batch['progress'] = '$completedClasses / $classLimit Classes';
+    
+    int remaining = classLimit - completedClasses;
+    if (remaining <= 3 && completedClasses < classLimit) {
+       if (!isFeePaid) {
+           widget.batch['isFeeReminder'] = true;
+           widget.batch['feeStatus'] = '⚠ Fee Reminder';
+       } else {
+           widget.batch['isFeeReminder'] = false;
+           widget.batch['feeStatus'] = '✓ Fee Collected';
+       }
+    } else {
+       isFeePaid = false; 
+       widget.batch['isFeeReminder'] = false;
+       widget.batch['feeStatus'] = '✓ Fee Collected';
+    }
+    
+    await DatabaseHelper.instance.updateBatch(widget.batch);
+  }
+
+  String _getFormattedDate() { DateTime now = DateTime.now(); return '${now.day} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][now.month - 1]} ${now.year}'; }
   
   void _showAddClassDialog() async {
     if (completedClasses >= classLimit) return; 
+
     if (SettingsManager.isTimetableEnabled) {
-      final tts = await DatabaseHelper.instance.fetchTimetableForBatch(widget.batch['id']);
-      if (tts.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please create a Timetable for this batch first!'), backgroundColor: Colors.orange));
-        Navigator.push(context, MaterialPageRoute(builder: (context) => TimetableManagerScreen(batch: widget.batch)));
-        return;
+      final tts = await DatabaseHelper.instance.fetchTimetablesForBatch(widget.batch['id']);
+      if (tts.isEmpty && int.parse(widget.batch['totalClasses'].toString()) == 0) {
+        bool? timetableCreated = await showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('Timetable Required'),
+            content: const Text('You must create a timetable for this batch before adding the first class.'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+              ElevatedButton(
+                onPressed: () async {
+                  Navigator.pop(context, false);
+                  await Navigator.push(context, MaterialPageRoute(builder: (context) => TimetableManagementScreen(batch: widget.batch, isInitialSetup: true)));
+                  _showAddClassDialog(); // re-trigger
+                },
+                child: const Text('Create Timetable')
+              )
+            ],
+          )
+        );
+        if (timetableCreated != true) return;
       }
     }
+    
     TextEditingController subjectController = TextEditingController();
-    showDialog(context: context, builder: (context) => AlertDialog(title: const Text('Add New Class'), content: TextField(controller: subjectController, decoration: const InputDecoration(labelText: 'Subject / Description')), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')), ElevatedButton(onPressed: () async { if (subjectController.text.isNotEmpty) { Navigator.pop(context); Map<String, dynamic> newClass = { 'batchId': widget.batch['id'], 'setNumber': currentSetNumber, 'classNum': completedClasses + 1, 'date': DateFormat('dd/MM/yyyy').format(DateTime.now()), 'subject': subjectController.text }; int insertedId = await DatabaseHelper.instance.insertClass(newClass); newClass['id'] = insertedId; widget.batch['totalClasses'] = (int.parse(widget.batch['totalClasses'].toString()) + 1).toString(); setState(() { completedClasses++; classHistory.insert(0, newClass); }); await _updateBatchState(); if (completedClasses >= classLimit) { Future.delayed(const Duration(milliseconds: 400), () { _showSetCompletedDialog(); }); } } }, child: const Text('Save Class'))]));
+    showDialog(context: context, builder: (context) {
+        return AlertDialog(
+          title: const Text('Add New Class'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / $classLimit', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)), const SizedBox(height: 15), TextField(controller: subjectController, decoration: const InputDecoration(labelText: 'Subject / Description', border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))) ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            ElevatedButton(onPressed: () async { 
+              if (subjectController.text.isNotEmpty) { 
+                Navigator.pop(context); 
+                
+                int newClassNum = completedClasses + 1;
+                Map<String, dynamic> newClass = {
+                  'batchId': widget.batch['id'],
+                  'setNumber': currentSetNumber,
+                  'classNum': newClassNum,
+                  'date': _getFormattedDate(),
+                  'subject': subjectController.text
+                };
+
+                int insertedId = await DatabaseHelper.instance.insertClass(newClass);
+                newClass['id'] = insertedId;
+                
+                int totalCls = int.parse(widget.batch['totalClasses'].toString()) + 1;
+                widget.batch['totalClasses'] = totalCls.toString();
+
+                setState(() { 
+                  completedClasses++; 
+                  classHistory.insert(0, newClass);
+                }); 
+                
+                await _updateBatchState();
+
+                if (completedClasses >= classLimit) { 
+                  Future.delayed(const Duration(milliseconds: 400), () { _showSetCompletedDialog(); }); 
+                } 
+              } 
+            }, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white), child: const Text('Save Class')),
+          ],
+        );
+      },
+    );
   }
 
-  void _showSetCompletedDialog() { showDialog(context: context, barrierDismissible: false, builder: (context) => PopScope(canPop: false, child: AlertDialog(icon: const Icon(Icons.verified, color: Colors.green, size: 50), title: Text('Set $currentSetNumber Completed!'), actions: [ElevatedButton(onPressed: () async { Navigator.pop(context); widget.batch['completedSets'] = (int.parse(widget.batch['completedSets'].toString()) + 1).toString(); setState(() { currentSetNumber++; completedClasses = 0; classHistory.clear(); isFeePaid = false; }); await _updateBatchState(); }, child: const Text('Continue'))]))); }
+  void _showSetCompletedDialog() { 
+    showDialog(context: context, barrierDismissible: false, builder: (context) => PopScope(canPop: false, child: AlertDialog(icon: const Icon(Icons.verified, color: Colors.green, size: 50), title: Text('Set $currentSetNumber Completed!'), content: const Text('Generating the next set automatically.'), actions: [ElevatedButton(onPressed: () async { 
+      Navigator.pop(context); 
+      
+      int completedSets = int.parse(widget.batch['completedSets'].toString()) + 1;
+      widget.batch['completedSets'] = completedSets.toString();
 
-  Future<bool> _askIncludeDeletedDialog() async {
-    bool result = false;
-    await showDialog(context: context, builder: (context) => AlertDialog(title: const Text('Export PDF'), content: const Text('Do you want to include the deleted classes history?'), actions: [TextButton(onPressed: () { result = false; Navigator.pop(context); }, child: const Text('No')), ElevatedButton(onPressed: () { result = true; Navigator.pop(context); }, child: const Text('Yes'))]));
-    return result;
+      setState(() { 
+        currentSetNumber++; 
+        completedClasses = 0; 
+        classHistory.clear(); 
+        isFeePaid = false; 
+      }); 
+      await _updateBatchState();
+    }, style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white), child: const Text('Continue'))]))); 
   }
 
+  Future<void> _showPdfExportOptions() async {
+    bool includeDeleted = false;
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Export PDF Report'),
+        content: const Text('Do you want to include the deleted classes in this report?'),
+        actions: [
+          TextButton(onPressed: () {
+            includeDeleted = false;
+            Navigator.pop(context);
+            PdfService.generateBatchReport(context, widget.batch, includeDeleted);
+          }, child: const Text('No')),
+          ElevatedButton(onPressed: () {
+            includeDeleted = true;
+            Navigator.pop(context);
+            PdfService.generateBatchReport(context, widget.batch, includeDeleted);
+          }, child: const Text('Yes')),
+        ],
+      )
+    );
+  }
+  
   @override Widget build(BuildContext context) {
-    bool isDark = Theme.of(context).brightness == Brightness.dark; int remainingClasses = classLimit - completedClasses; bool isFeeReminder = widget.batch['isFeeReminder'] == true;
+    bool isDark = Theme.of(context).brightness == Brightness.dark; 
+    int remainingClasses = classLimit - completedClasses;
+    bool isFeeReminder = widget.batch['isFeeReminder'] == true;
+    Color progressColor = completedClasses >= classLimit ? Colors.green : (isFeeReminder ? Colors.orange : const Color(0xFF005CFF));
+    
     return Scaffold(
-      appBar: AppBar(title: Text(widget.batch['batchName'], style: const TextStyle(fontWeight: FontWeight.bold)), centerTitle: true, actions: [
-        PopupMenuButton<String>(
-          onSelected: (value) async {
-            if (value == 'timetable' && SettingsManager.isTimetableEnabled) { Navigator.push(context, MaterialPageRoute(builder: (context) => TimetableManagerScreen(batch: widget.batch))); }
-            else if (value == 'report') { bool incDel = await _askIncludeDeletedDialog(); AdvancedPdfService.generateAdvancedReport(context, widget.batch, incDel); }
-          },
-          itemBuilder: (context) => [
-            if(SettingsManager.isTimetableEnabled) const PopupMenuItem(value: 'timetable', child: Text('Manage Timetable')),
-            const PopupMenuItem(value: 'report', child: Text('Generate PDF Report')),
-          ]
-        )
-      ]),
+      appBar: AppBar(
+        title: Text(widget.batch['batchName'], style: const TextStyle(fontWeight: FontWeight.bold)), 
+        centerTitle: true, backgroundColor: Colors.transparent, elevation: 0,
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'history') {
+                Navigator.push(context, MaterialPageRoute(builder: (context) => SetHistoryScreen(batch: widget.batch)));
+              } else if (value == 'removals') {
+                Navigator.push(context, MaterialPageRoute(builder: (context) => RemovalHistoryScreen(batchId: widget.batch['id'])));
+              } else if (value == 'timetable') {
+                Navigator.push(context, MaterialPageRoute(builder: (context) => TimetableManagementScreen(batch: widget.batch)));
+              } else if (value == 'report') {
+                _showPdfExportOptions();
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'history', child: Text('Set History')),
+              const PopupMenuItem(value: 'removals', child: Text('Removal History')),
+              if (SettingsManager.isTimetableEnabled)
+                const PopupMenuItem(value: 'timetable', child: Text('Manage Timetable')),
+              const PopupMenuItem(value: 'report', child: Text('Generate PDF Report')),
+            ],
+          )
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
-          Card(elevation: isDark ? 2 : 8, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)), child: Padding(padding: const EdgeInsets.all(24.0), child: Column(children: [Text('Set ${currentSetNumber.toString().padLeft(2, '0')}', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)), const SizedBox(height: 20), LinearProgressIndicator(value: completedClasses / classLimit, minHeight: 12, borderRadius: BorderRadius.circular(6), color: isFeeReminder ? Colors.orange : Colors.blue), const SizedBox(height: 10), Text('$completedClasses / $classLimit Classes', style: const TextStyle(fontWeight: FontWeight.w500))]))), const SizedBox(height: 20),
-          if (isFeeReminder) Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: Colors.orange.withOpacity(0.1), borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.orange)), child: Column(children: [const Text('⚠ FEE REMINDER', style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold)), const SizedBox(height: 12), ElevatedButton(onPressed: () async { setState(() { isFeePaid = true; }); await _updateBatchState(); }, child: const Text('Mark Fee as Collected'))]))
-          else if (isFeePaid && remainingClasses <= 3) Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: Colors.green.withOpacity(0.1), borderRadius: BorderRadius.circular(16)), child: const Text('✓ FEE COLLECTED', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold))),
-          const SizedBox(height: 20), const Text('Recent Classes', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)), const SizedBox(height: 10),
+          Card(elevation: isDark ? 2 : 8, shadowColor: isDark ? Colors.black54 : Colors.black26, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)), child: Padding(padding: const EdgeInsets.all(24.0), child: Column(children: [const Text('CURRENT SET', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, letterSpacing: 1)), const SizedBox(height: 10), Text('Set ${currentSetNumber.toString().padLeft(2, '0')}', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)), const SizedBox(height: 20), LinearProgressIndicator(value: completedClasses / classLimit, minHeight: 12, borderRadius: BorderRadius.circular(6), backgroundColor: isDark ? Colors.grey.shade800 : Colors.grey.shade200, color: progressColor), const SizedBox(height: 10), Text('$completedClasses / $classLimit Classes ($remainingClasses Classes Remaining)', style: const TextStyle(fontWeight: FontWeight.w500))]))), const SizedBox(height: 20),
+          if (isFeeReminder) Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: isDark ? Colors.orange.shade900.withOpacity(0.3) : Colors.orange.shade50, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.orange.shade200)), child: Column(children: [Row(children: [const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 30), const SizedBox(width: 16), Expanded(child: Text('⚠ FEE REMINDER\n$remainingClasses classes remaining. Remember to collect the class fee.', style: TextStyle(color: Colors.orange.shade800, fontWeight: FontWeight.bold)))]), const SizedBox(height: 12), SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: const Icon(Icons.check_circle_outline), label: const Text('Mark Fee as Collected'), style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white), onPressed: () async { setState(() { isFeePaid = true; }); await _updateBatchState(); }))]))
+          else if (isFeePaid && remainingClasses <= 3) Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: isDark ? Colors.green.shade900.withOpacity(0.3) : Colors.green.shade50, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.green.shade200)), child: const Row(children: [Icon(Icons.verified, color: Colors.green, size: 30), SizedBox(width: 16), Text('✓ FEE COLLECTED', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 16))])),
+          const SizedBox(height: 20), const Text('Recent Classes (Swipe left to delete)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)), const SizedBox(height: 10),
+          if (classHistory.isEmpty) Center(child: Padding(padding: const EdgeInsets.all(20.0), child: Text('No classes added in this set yet.', style: TextStyle(color: Colors.grey.shade500)))),
           ...classHistory.asMap().entries.map((entry) {
-            var cls = entry.value;
+            int index = entry.key; var cls = entry.value;
             return Dismissible(
-              key: UniqueKey(), direction: DismissDirection.endToStart, background: Container(color: Colors.red, alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete, color: Colors.white)),
+              key: UniqueKey(), direction: DismissDirection.endToStart,
+              background: Container(margin: const EdgeInsets.symmetric(vertical: 4), decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12)), alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete_sweep, color: Colors.white, size: 30)),
               confirmDismiss: (direction) async { return await SecurityGateway.verifyClassDeletion(context); },
               onDismissed: (direction) async { 
-                await DatabaseHelper.instance.insertRemoval({'batchId': widget.batch['id'], 'batchName': widget.batch['batchName'], 'setNumber': cls['setNumber'], 'classNum': cls['classNum'], 'date': cls['date'], 'subject': cls['subject'], 'removedOn': DateFormat('dd/MM/yyyy').format(DateTime.now())});
-                await DatabaseHelper.instance.deleteClass(cls['id']); widget.batch['totalClasses'] = (int.parse(widget.batch['totalClasses'].toString()) - 1).toString(); setState(() { classHistory.removeAt(entry.key); completedClasses--; }); await _updateBatchState(); 
+                
+                String removedDate = '${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}';
+                Map<String, dynamic> removalData = {
+                  'batchId': widget.batch['id'],
+                  'batchName': widget.batch['batchName'],
+                  'setNumber': cls['setNumber'],
+                  'classNum': cls['classNum'],
+                  'date': cls['date'],
+                  'subject': cls['subject'],
+                  'removedOn': removedDate
+                };
+                await DatabaseHelper.instance.insertRemoval(removalData);
+
+                await DatabaseHelper.instance.deleteClass(cls['id']);
+                int totalCls = int.parse(widget.batch['totalClasses'].toString()) - 1;
+                widget.batch['totalClasses'] = totalCls.toString();
+                
+                setState(() { classHistory.removeAt(index); completedClasses--; }); 
+                await _updateBatchState();
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Class removed and logged in history.'))); 
               },
-              child: Card(child: ListTile(title: Text(cls['subject']!), subtitle: Text('Class ${cls['classNum']} • ${cls['date']}')))
+              child: Card(elevation: 0, margin: const EdgeInsets.symmetric(vertical: 4), color: isDark ? const Color(0xFF1E1E1E) : Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: isDark ? Colors.grey.shade800 : Colors.grey.shade300)), child: ListTile(leading: CircleAvatar(backgroundColor: Colors.blue.withOpacity(0.1), child: const Icon(Icons.menu_book, color: Colors.blue)), title: Text(cls['subject']!, style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('Class ${cls['classNum']} • ${cls['date']}'))),
             );
-          }),
+          }).toList(),
         ],
       ),
-      floatingActionButton: completedClasses >= classLimit ? null : FloatingActionButton.extended(onPressed: _showAddClassDialog, icon: const Icon(Icons.add), label: const Text('Add Class')),
+      floatingActionButton: completedClasses >= classLimit ? null : FloatingActionButton.extended(onPressed: _showAddClassDialog, icon: const Icon(Icons.add), label: const Text('Add Class', style: TextStyle(fontWeight: FontWeight.bold))),
     );
   }
 }
 
-// --- TIMETABLE MANAGER SCREEN ---
-class TimetableManagerScreen extends StatefulWidget {
-  final Map<String, dynamic> batch; const TimetableManagerScreen({super.key, required this.batch});
-  @override State<TimetableManagerScreen> createState() => _TimetableManagerScreenState();
+// --- SET HISTORY SCREEN ---
+class SetHistoryScreen extends StatelessWidget {
+  final Map<String, dynamic> batch;
+  const SetHistoryScreen({super.key, required this.batch});
+
+  @override
+  Widget build(BuildContext context) {
+    int currentSet = batch['currentSetNumber'];
+    
+    return Scaffold(
+      appBar: AppBar(title: const Text('Set History'), centerTitle: true),
+      body: currentSet <= 1 
+        ? const Center(child: Text("No completed sets available yet."))
+        : ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: currentSet - 1,
+            itemBuilder: (context, index) {
+              int setNumber = index + 1;
+              return Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                child: ListTile(
+                  leading: const CircleAvatar(backgroundColor: Colors.green, child: Icon(Icons.check, color: Colors.white)),
+                  title: Text('Set ${setNumber.toString().padLeft(2, '0')}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text('${batch['classLimit']} / ${batch['classLimit']} Classes • Fee: Collected'),
+                  trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                  onTap: () {
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => PastSetDetailsScreen(batchId: batch['id'], setNumber: setNumber, classLimit: batch['classLimit'])));
+                  },
+                ),
+              );
+            },
+          ),
+    );
+  }
 }
-class _TimetableManagerScreenState extends State<TimetableManagerScreen> {
-  List<Map<String, dynamic>> _timetables = [];
-  final List<String> days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+// --- PAST SET DETAILS SCREEN ---
+class PastSetDetailsScreen extends StatefulWidget {
+  final int batchId; final int setNumber; final int classLimit;
+  const PastSetDetailsScreen({super.key, required this.batchId, required this.setNumber, required this.classLimit});
+  @override State<PastSetDetailsScreen> createState() => _PastSetDetailsScreenState();
+}
+class _PastSetDetailsScreenState extends State<PastSetDetailsScreen> {
+  List<Map<String, dynamic>> _classes = [];
   
-  @override void initState() { super.initState(); _loadTimetable(); }
-  Future<void> _loadTimetable() async { final data = await DatabaseHelper.instance.fetchTimetableForBatch(widget.batch['id']); setState(() { _timetables = data; }); }
-
-  Future<void> _addTimeSlot() async {
-    String selectedDay = 'Monday'; TimeOfDay? start = TimeOfDay.now(); TimeOfDay? end = TimeOfDay.now();
-    await showDialog(context: context, builder: (context) {
-      return StatefulBuilder(builder: (context, setDialogState) {
-        return AlertDialog(
-          title: const Text('Add Time Slot'),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            DropdownButton<String>(value: selectedDay, isExpanded: true, items: days.map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setDialogState(() => selectedDay = v!)),
-            ListTile(title: const Text('Start Time'), subtitle: Text(start!.format(context)), onTap: () async { final t = await showTimePicker(context: context, initialTime: start!); if(t!=null) setDialogState(() => start = t); }),
-            ListTile(title: const Text('End Time'), subtitle: Text(end!.format(context)), onTap: () async { final t = await showTimePicker(context: context, initialTime: end!); if(t!=null) setDialogState(() => end = t); }),
-          ]),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-            ElevatedButton(onPressed: () async {
-              int startMins = start!.hour * 60 + start!.minute; int endMins = end!.hour * 60 + end!.minute;
-              if (startMins >= endMins) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End time must be after start time!'))); return; }
-              
-              // Conflict Check (Requirement 8)
-              final allTts = await DatabaseHelper.instance.fetchAllTimetables();
-              bool hasConflict = false; String conflictBatch = '';
-              for (var t in allTts) {
-                if (t['day'] == selectedDay && t['batchId'] != widget.batch['id']) {
-                  if (startMins < t['endMins'] && endMins > t['startMins']) {
-                    hasConflict = true; 
-                    var b = AppData.batches.firstWhere((b) => b['id'] == t['batchId'], orElse: () => {'batchName': 'Unknown'});
-                    conflictBatch = b['batchName']; break;
-                  }
-                }
-              }
-              if (hasConflict) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Conflict Warning: Overlaps with $conflictBatch'), backgroundColor: Colors.red));
-                return;
-              }
-
-              await DatabaseHelper.instance.insertTimetable({'batchId': widget.batch['id'], 'day': selectedDay, 'startMins': startMins, 'endMins': endMins, 'timeLabel': '${start!.format(context)} - ${end!.format(context)}'});
-              Navigator.pop(context); _loadTimetable();
-            }, child: const Text('Save'))
-          ]
-        );
-      });
-    });
+  @override void initState() { super.initState(); _fetchPastClasses(); }
+  Future<void> _fetchPastClasses() async {
+    final data = await DatabaseHelper.instance.fetchClassesForBatch(widget.batchId, widget.setNumber);
+    setState(() { _classes = data; });
   }
 
   @override Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('${widget.batch['batchName']} Timetable')),
-      body: _timetables.isEmpty ? const Center(child: Text("No timetable set.")) : ListView.builder(itemCount: _timetables.length, itemBuilder: (context, index) {
-        var tb = _timetables[index];
-        return Card(child: ListTile(title: Text(tb['day'], style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text(tb['timeLabel']), trailing: IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () async { await DatabaseHelper.instance.deleteTimetable(tb['id']); _loadTimetable(); })));
-      }),
-      floatingActionButton: FloatingActionButton(onPressed: _addTimeSlot, child: const Icon(Icons.add)),
+      appBar: AppBar(title: Text('Set ${widget.setNumber.toString().padLeft(2, '0')} Details'), centerTitle: true),
+      body: _classes.isEmpty 
+        ? const Center(child: CircularProgressIndicator())
+        : ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: _classes.length,
+            itemBuilder: (context, index) {
+              var cls = _classes[index];
+              return Card(
+                elevation: 0, margin: const EdgeInsets.symmetric(vertical: 4), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade300)),
+                child: ListTile(
+                  leading: CircleAvatar(backgroundColor: Colors.blue.withOpacity(0.1), child: const Icon(Icons.history_edu, color: Colors.blue)),
+                  title: Text(cls['subject'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text('Class ${cls['classNum']} • Date: ${cls['date']}'),
+                ),
+              );
+            },
+          ),
     );
   }
 }
 
+// --- REMOVAL HISTORY SCREEN ---
+class RemovalHistoryScreen extends StatefulWidget {
+  final int batchId;
+  const RemovalHistoryScreen({super.key, required this.batchId});
+  @override State<RemovalHistoryScreen> createState() => _RemovalHistoryScreenState();
+}
+class _RemovalHistoryScreenState extends State<RemovalHistoryScreen> {
+  List<Map<String, dynamic>> _removals = [];
+  
+  @override void initState() { super.initState(); _fetchRemovals(); }
+  Future<void> _fetchRemovals() async {
+    final data = await DatabaseHelper.instance.fetchRemovalHistory(widget.batchId);
+    setState(() { _removals = data; });
+  }
+
+  @override Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Removal History'), backgroundColor: Colors.red.withOpacity(0.1), centerTitle: true),
+      body: _removals.isEmpty
+        ? const Center(child: Text("No classes have been removed."))
+        : ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: _removals.length,
+            itemBuilder: (context, index) {
+              var removal = _removals[index];
+              return Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                shape: RoundedRectangleBorder(side: const BorderSide(color: Colors.red, width: 0.5), borderRadius: BorderRadius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('Class ${removal['classNum']} Removed', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red, fontSize: 16)),
+                          Text('Set ${removal['setNumber']}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+                        ],
+                      ),
+                      const Divider(),
+                      Text('Original Date: ${removal['date']}'),
+                      Text('Subject: ${removal['subject']}'),
+                      const SizedBox(height: 8),
+                      Text('Removed On: ${removal['removedOn']}', style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: Colors.grey)),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+    );
+  }
+}
+
+// --- CREATE BATCH SCREEN ---
 class CreateBatchScreen extends StatefulWidget { const CreateBatchScreen({super.key}); @override State<CreateBatchScreen> createState() => _CreateBatchScreenState(); }
 class _CreateBatchScreenState extends State<CreateBatchScreen> {
   final TextEditingController nameController = TextEditingController(), descController = TextEditingController(), limitController = TextEditingController(text: '8');
+  @override void dispose() { nameController.dispose(); descController.dispose(); limitController.dispose(); super.dispose(); }
   @override Widget build(BuildContext context) {
-    return Scaffold(appBar: AppBar(title: const Text('Create New Batch')), body: Padding(padding: const EdgeInsets.all(24.0), child: Column(children: [TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Batch Name')), const SizedBox(height: 20), TextField(controller: limitController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Class Limit')), const SizedBox(height: 40), ElevatedButton(onPressed: () { if(nameController.text.isNotEmpty) { Navigator.pop(context, {'batchName': nameController.text, 'classLimit': limitController.text}); } }, child: const Text('Create Batch'))])));
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Create New Batch'), backgroundColor: Colors.transparent, elevation: 0),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextFormField(controller: nameController, decoration: InputDecoration(labelText: 'Batch Name', border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)), filled: true, fillColor: isDark ? const Color(0xFF1E1E1E) : Colors.white)), const SizedBox(height: 20),
+            TextFormField(controller: descController, maxLines: 3, decoration: InputDecoration(labelText: 'Description', border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)), filled: true, fillColor: isDark ? const Color(0xFF1E1E1E) : Colors.white)), const SizedBox(height: 20),
+            TextFormField(controller: limitController, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: 'Class Limit', border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)), filled: true, fillColor: isDark ? const Color(0xFF1E1E1E) : Colors.white)), const SizedBox(height: 40),
+            SizedBox(width: double.infinity, height: 55, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: () { if(nameController.text.isNotEmpty) { Navigator.pop(context, {'batchName': nameController.text, 'classLimit': limitController.text}); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Batch Created Successfully!'))); } }, child: const Text('Create Batch', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)))),
+          ],
+        ),
+      ),
+    );
   }
 }
 
-// --- DEVELOPER PROFILE ---
+// --- DEVELOPER PROFILE DRAWER ---
 class DeveloperProfileDrawer extends StatelessWidget {
   final VoidCallback toggleTheme; final bool isDarkMode; final VoidCallback onSettingsClosed;
   const DeveloperProfileDrawer({super.key, required this.toggleTheme, required this.isDarkMode, required this.onSettingsClosed});
-  Future<void> _launchURL(String u) async { if (!await launchUrl(Uri.parse(u), mode: LaunchMode.externalApplication)) debugPrint('Error'); }
+
+  Future<void> _launchURL(String urlString) async { if (!await launchUrl(Uri.parse(urlString), mode: LaunchMode.externalApplication)) debugPrint('Could not launch'); }
+  void _showProfileImage(BuildContext context) { showDialog(context: context, builder: (context) => Dialog(backgroundColor: Colors.transparent, child: InteractiveViewer(panEnabled: true, minScale: 0.5, maxScale: 4.0, child: ClipRRect(borderRadius: BorderRadius.circular(20), child: Image.asset('profile.jpg'))))); }
+
   @override Widget build(BuildContext context) {
-    return Drawer(child: Column(children: [
-      const UserAccountsDrawerHeader(accountName: Text('Jilaksan_K [BSc (Dat Sc) {R} SUSL]', style: TextStyle(fontWeight: FontWeight.bold)), accountEmail: Text('Developer & Admin')),
-      ListTile(leading: const Icon(Icons.settings), title: const Text('Settings'), onTap: () async { Navigator.pop(context); AdminGateway.openSettings(context, toggleTheme, isDarkMode); await Future.delayed(const Duration(seconds: 1)); onSettingsClosed(); }),
-      ListTile(leading: const Icon(Icons.chat), title: const Text('WhatsApp'), onTap: () => _launchURL('https://wa.me/94751696798')),
-    ]));
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+    return Drawer(
+      backgroundColor: isDark ? const Color(0xFF121212) : Colors.white,
+      child: Column(
+        children: [
+          UserAccountsDrawerHeader(
+            decoration: const BoxDecoration(gradient: LinearGradient(colors: [Color(0xFF005CFF), Color(0xFF00D2FF)], begin: Alignment.topLeft, end: Alignment.bottomRight)),
+            accountName: TweenAnimationBuilder(tween: Tween<double>(begin: _isFirstTimeDrawerOpened ? 0 : 1, end: 1), duration: const Duration(milliseconds: 1200), curve: Curves.easeOutBack, onEnd: () { _isFirstTimeDrawerOpened = false; }, builder: (context, value, child) { return Opacity(opacity: value, child: Transform.translate(offset: Offset(0, 20 * (1 - value)), child: child)); }, child: const Text('Jilaksan_K [BSc (Dat Sc) {R} SUSL]', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white))),
+            accountEmail: const Text('Developer & Admin', style: TextStyle(color: Colors.white70)),
+            currentAccountPicture: GestureDetector(onTap: () => _showProfileImage(context), child: const Hero(tag: 'profilePic', child: CircleAvatar(backgroundColor: Colors.white, backgroundImage: AssetImage('profile.jpg')))),
+          ),
+          ListTile(
+            leading: const Icon(Icons.settings, color: Colors.blue), title: const Text('Security & Settings', style: TextStyle(fontWeight: FontWeight.bold)), trailing: const Icon(Icons.lock, size: 16, color: Colors.red), 
+            onTap: () async {
+              Navigator.pop(context); 
+              AdminGateway.openSettings(context, toggleTheme, isDarkMode);
+              await Future.delayed(const Duration(seconds: 1));
+              onSettingsClosed();
+            }
+          ),
+          ListTile(
+            leading: const Icon(Icons.picture_as_pdf, color: Colors.red), title: const Text('Export Combined Timetable'),
+            onTap: () async {
+              Navigator.pop(context);
+              await PdfService.exportCombinedTimetable(context);
+            }
+          ),
+          const Divider(), const Padding(padding: EdgeInsets.only(left: 16, top: 8, bottom: 8), child: Align(alignment: Alignment.centerLeft, child: Text('Social Media', style: TextStyle(color: Colors.grey)))),
+          ListTile(leading: const Icon(Icons.chat, color: Colors.green), title: const Text('WhatsApp'), subtitle: const Text('+94 75 169 6798'), onTap: () => _launchURL('https://wa.me/94751696798')),
+          ListTile(leading: const Icon(Icons.camera_alt, color: Colors.pinkAccent), title: const Text('Instagram'), subtitle: const Text('jilaksan_k'), onTap: () => _launchURL('https://www.instagram.com/jilaksan_k?igsi=bWJocGkxNWY5MG5y')),
+          ListTile(leading: const Icon(Icons.facebook, color: Colors.blue), title: const Text('Facebook'), subtitle: const Text('Kanthasamy Jilaksan'), onTap: () => _launchURL('https://www.facebook.com/share/1EZxroSv9E/')),
+        ],
+      ),
+    );
   }
 }
-
-
-
-
-
-
-
-
-
