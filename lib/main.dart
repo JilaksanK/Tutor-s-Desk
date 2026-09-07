@@ -334,7 +334,9 @@ class PdfService {
       
       int totalClasses = int.parse(b['totalClasses'].toString());
       double val1 = (totalClasses / daysSinceCreated) * 100;
-      pie1Data.add(pw.PieDataSet(value: val1, name: b['batchName'], color: _getRandomColor()));
+      
+      // FIXED: Used 'legend' instead of 'name'
+      pie1Data.add(pw.PieDataSet(value: val1, legend: b['batchName'].toString(), color: _getRandomColor()));
 
       // Pie Chart 2: Set comparison
       final bClasses = await db.query('classes', where: 'batchId = ?', whereArgs: [b['id']], orderBy: 'setNumber ASC, classNum ASC');
@@ -353,7 +355,9 @@ class PdfService {
       if (totalDays == 0) totalDays = 1;
       
       double val2 = (totalCurr + totalLast) / totalDays;
-      pie2Data.add(pw.PieDataSet(value: val2, name: b['batchName'], color: _getRandomColor()));
+      
+      // FIXED: Used 'legend' instead of 'name'
+      pie2Data.add(pw.PieDataSet(value: val2, legend: b['batchName'].toString(), color: _getRandomColor()));
     }
 
     // Column Chart Current Batch Data
@@ -422,10 +426,8 @@ class PdfService {
           pw.Container(
             height: 150,
             child: pw.Chart(
-              grid: pw.CartesianGrid(
-                xAxis: pw.NumericAxis(title: pw.ChartLegend(pw.Text('Set'))),
-                yAxis: pw.NumericAxis(title: pw.ChartLegend(pw.Text('Days'))),
-              ),
+              // FIXED: Removed custom axis to avoid parameter errors in specific pdf package versions
+              grid: pw.CartesianGrid(),
               datasets: [pw.BarDataSet(color: PdfColors.blue, data: barData)]
             )
           ),
@@ -436,10 +438,8 @@ class PdfService {
           pw.Container(
             height: 150,
             child: pw.Chart(
-              grid: pw.CartesianGrid(
-                xAxis: pw.NumericAxis(title: pw.ChartLegend(pw.Text('Batches'))),
-                yAxis: pw.NumericAxis(title: pw.ChartLegend(pw.Text('Days for Last Set'))),
-              ),
+              // FIXED: Removed custom axis to avoid parameter errors
+              grid: pw.CartesianGrid(),
               datasets: [pw.LineDataSet(color: PdfColors.red, data: lineData)]
             )
           ),
@@ -1482,7 +1482,9 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
     showDialog(context: context, builder: (context) {
         return AlertDialog(
           title: const Text('Add New Class'),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / $classLimit', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)), const SizedBox(height: 15), TextField(controller: subjectController, decoration: const InputDecoration(labelText: 'Subject / Description', border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))) ]),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / $classLimit', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)), const SizedBox(height: 15), 
+          // FIXED: Removed const before InputDecoration
+          TextField(controller: subjectController, decoration: InputDecoration(labelText: 'Subject / Description', border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))) ]),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
             ElevatedButton(onPressed: () async { 
