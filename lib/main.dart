@@ -442,7 +442,6 @@ class PdfService {
           pw.Container(
             height: 150,
             child: pw.Chart(
-              // FIXED: Added explicitly required xAxis and yAxis using FixedAxis
               grid: pw.CartesianGrid(
                 xAxis: pw.FixedAxis(_getXTicks(barData)),
                 yAxis: pw.FixedAxis(_generateYTicks(barData)),
@@ -457,7 +456,6 @@ class PdfService {
           pw.Container(
             height: 150,
             child: pw.Chart(
-              // FIXED: Added explicitly required xAxis and yAxis using FixedAxis
               grid: pw.CartesianGrid(
                 xAxis: pw.FixedAxis(_getXTicks(lineData)),
                 yAxis: pw.FixedAxis(_generateYTicks(lineData)),
@@ -1469,7 +1467,9 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
     await DatabaseHelper.instance.updateBatch(widget.batch);
   }
 
-  String _getFormattedDate() { DateTime now = DateTime.now(); return '${now.day} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][now.month - 1]} ${now.year}'; }
+  String _getFormattedDate(DateTime date) { 
+    return '${date.day} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][date.month - 1]} ${date.year}'; 
+  }
   
   void _showAddClassDialog() async {
     if (completedClasses >= classLimit) return; 
@@ -1501,45 +1501,89 @@ class _BatchDetailsScreenState extends State<BatchDetailsScreen> {
     }
     
     TextEditingController subjectController = TextEditingController();
+    DateTime selectedDate = DateTime.now(); // Default to present date
+
     showDialog(context: context, builder: (context) {
-        return AlertDialog(
-          title: const Text('Add New Class'),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / $classLimit', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)), const SizedBox(height: 15), 
-          TextField(controller: subjectController, decoration: InputDecoration(labelText: 'Subject / Description', border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))) ]),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-            ElevatedButton(onPressed: () async { 
-              if (subjectController.text.isNotEmpty) { 
-                Navigator.pop(context); 
-                
-                int newClassNum = completedClasses + 1;
-                Map<String, dynamic> newClass = {
-                  'batchId': widget.batch['id'],
-                  'setNumber': currentSetNumber,
-                  'classNum': newClassNum,
-                  'date': _getFormattedDate(),
-                  'subject': subjectController.text
-                };
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            return AlertDialog(
+              title: const Text('Add New Class'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min, 
+                children: [
+                  Text('Set: $currentSetNumber | Class: ${completedClasses + 1} / $classLimit', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)), 
+                  const SizedBox(height: 15), 
+                  
+                  // New Class Date Picker Section
+                  InkWell(
+                    onTap: () async {
+                      DateTime? picked = await showDatePicker(
+                        context: context,
+                        initialDate: selectedDate,
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime.now().add(const Duration(days: 365)),
+                      );
+                      if (picked != null && picked != selectedDate) {
+                        setStateDialog(() {
+                          selectedDate = picked;
+                        });
+                      }
+                    },
+                    child: InputDecorator(
+                      decoration: InputDecoration(
+                        labelText: 'Class Date',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(_getFormattedDate(selectedDate), style: const TextStyle(fontSize: 16)),
+                          const Icon(Icons.calendar_today, size: 20, color: Colors.blue),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 15),
 
-                int insertedId = await DatabaseHelper.instance.insertClass(newClass);
-                newClass['id'] = insertedId;
-                
-                int totalCls = int.parse(widget.batch['totalClasses'].toString()) + 1;
-                widget.batch['totalClasses'] = totalCls.toString();
+                  TextField(controller: subjectController, decoration: InputDecoration(labelText: 'Subject / Description', border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))) 
+                ]
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+                ElevatedButton(onPressed: () async { 
+                  if (subjectController.text.isNotEmpty) { 
+                    Navigator.pop(context); 
+                    
+                    int newClassNum = completedClasses + 1;
+                    Map<String, dynamic> newClass = {
+                      'batchId': widget.batch['id'],
+                      'setNumber': currentSetNumber,
+                      'classNum': newClassNum,
+                      'date': _getFormattedDate(selectedDate), // Selected custom date gets saved here
+                      'subject': subjectController.text
+                    };
 
-                setState(() { 
-                  completedClasses++; 
-                  classHistory.insert(0, newClass);
-                }); 
-                
-                await _updateBatchState();
+                    int insertedId = await DatabaseHelper.instance.insertClass(newClass);
+                    newClass['id'] = insertedId;
+                    
+                    int totalCls = int.parse(widget.batch['totalClasses'].toString()) + 1;
+                    widget.batch['totalClasses'] = totalCls.toString();
 
-                if (completedClasses >= classLimit) { 
-                  Future.delayed(const Duration(milliseconds: 400), () { _showSetCompletedDialog(); }); 
-                } 
-              } 
-            }, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white), child: const Text('Save Class')),
-          ],
+                    setState(() { 
+                      completedClasses++; 
+                      classHistory.insert(0, newClass);
+                    }); 
+                    
+                    await _updateBatchState();
+
+                    if (completedClasses >= classLimit) { 
+                      Future.delayed(const Duration(milliseconds: 400), () { _showSetCompletedDialog(); }); 
+                    } 
+                  } 
+                }, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF005CFF), foregroundColor: Colors.white), child: const Text('Save Class')),
+              ],
+            );
+          }
         );
       },
     );
